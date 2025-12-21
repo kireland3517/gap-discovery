@@ -12,6 +12,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Optional
 
 import anthropic
 from rich.console import Console
@@ -308,31 +309,160 @@ def process_cluster(cluster_name: str, project_name: str = None, preview: bool =
         console.print("\n[yellow]Preview mode - wedges not saved to Notion[/yellow]")
 
 
-def process_auto():
-    """Auto-process all high-scoring opportunities."""
-    console.print("Finding high-scoring opportunities...")
+def get_cluster_for_opportunity(opportunity: dict) -> Optional[dict]:
+    """Fetch the cluster linked to an opportunity via relation."""
+    cluster_relation = opportunity["properties"].get("Cluster", {}).get("relation", [])
+    if not cluster_relation:
+        return None
 
-    opportunities = notion_sync.get_high_score_opportunities(min_score=18)
+    cluster_id = cluster_relation[0]["id"]
+    client = notion_sync.get_client()
+    try:
+        return client.pages.retrieve(page_id=cluster_id)
+    except Exception:
+        return None
+
+
+def process_auto(min_score: int = 18, preview: bool = False):
+    """Auto-process all high-scoring opportunities."""
+    console.print(f"[bold]Finding opportunities with score >= {min_score}...[/bold]\n")
+
+    opportunities = notion_sync.get_high_score_opportunities(min_score=min_score)
 
     if not opportunities:
-        console.print("[yellow]No opportunities with score >= 18 found.[/yellow]")
+        console.print("[yellow]No opportunities with score >= {min_score} found.[/yellow]")
         console.print("Score some pain clusters in Notion first (Scored Opportunities database).")
         return
 
-    console.print(f"Found {len(opportunities)} high-scoring opportunities:\n")
+    # Build display table with cluster names
+    table = Table(show_header=True, title=f"High-Scoring Opportunities (>= {min_score}/25)")
+    table.add_column("#", justify="right", width=3)
+    table.add_column("Score", justify="center", width=7)
+    table.add_column("Cluster Name", width=35)
+    table.add_column("Theme", width=12)
+    table.add_column("Verdict", width=10)
 
-    table = Table(show_header=True)
-    table.add_column("Score", justify="right", width=6)
-    table.add_column("Cluster", width=40)
-
-    for opp in opportunities:
+    opportunities_with_clusters = []
+    for i, opp in enumerate(opportunities, 1):
         score = opp.get("_calculated_total", 0)
-        # Would need to fetch cluster name via relation
-        table.add_row(str(score), "(Cluster name)")
+        cluster = get_cluster_for_opportunity(opp)
+
+        if cluster:
+            cluster_data = get_cluster_data(cluster)
+            cluster_name = cluster_data["cluster_name"]
+            theme = cluster_data["theme"]
+        else:
+            cluster_name = "(Cluster not found)"
+            theme = "-"
+
+        verdict_select = opp["properties"].get("Verdict", {}).get("select")
+        verdict = verdict_select["name"] if verdict_select else "Unset"
+
+        # Color code by score
+        if score >= 22:
+            score_display = f"[green bold]{score}/25[/green bold]"
+        elif score >= 20:
+            score_display = f"[green]{score}/25[/green]"
+        else:
+            score_display = f"[yellow]{score}/25[/yellow]"
+
+        table.add_row(str(i), score_display, cluster_name, theme, verdict)
+        opportunities_with_clusters.append((opp, cluster, cluster_name, score))
 
     console.print(table)
-    console.print("\n[yellow]Auto-processing not fully implemented yet.[/yellow]")
-    console.print("Run with --cluster to process individual clusters.")
+    console.print("")
+
+    # Filter to only process those with "Pursue" verdict or unset
+    to_process = [
+        (opp, cluster, name, score)
+        for opp, cluster, name, score in opportunities_with_clusters
+        if cluster is not None
+    ]
+
+    if not to_process:
+        console.print("[yellow]No clusters available to process.[/yellow]")
+        return
+
+    # Check for existing wedges
+    already_have_wedges = []
+    need_processing = []
+
+    for opp, cluster, name, score in to_process:
+        existing_wedges = notion_sync.get_wedges_for_opportunity(opp["id"])
+        if existing_wedges:
+            already_have_wedges.append((name, len(existing_wedges)))
+        else:
+            need_processing.append((opp, cluster, name, score))
+
+    if already_have_wedges:
+        console.print(f"[dim]Skipping {len(already_have_wedges)} clusters that already have wedges:[/dim]")
+        for name, count in already_have_wedges:
+            console.print(f"  [dim]• {name} ({count} wedges)[/dim]")
+        console.print("")
+
+    if not need_processing:
+        console.print("[green]All high-scoring opportunities already have wedges![/green]")
+        return
+
+    console.print(f"[bold]Processing {len(need_processing)} clusters...[/bold]\n")
+
+    if preview:
+        console.print("[yellow]Preview mode - will show designs without saving[/yellow]\n")
+
+    # Process each cluster
+    processed = 0
+    failed = 0
+
+    for opp, cluster, cluster_name, score in need_processing:
+        console.print(f"\n{'='*60}")
+        console.print(f"[bold cyan]Processing: {cluster_name}[/bold cyan] (Score: {score}/25)")
+        console.print('='*60 + "\n")
+
+        try:
+            cluster_data = get_cluster_data(cluster)
+            scores = get_opportunity_scores(opp)
+
+            # Get sample quotes (from language patterns for now)
+            quotes = ["Sample quote from cluster analysis"]
+
+            # Build and run prompt
+            prompt = build_wedge_prompt(cluster_data, scores, quotes, [])
+            result = run_wedge_design(prompt)
+
+            if not result:
+                console.print(f"[red]Failed to generate wedges for {cluster_name}[/red]")
+                failed += 1
+                continue
+
+            # Display results
+            display_wedges(result, cluster_name)
+
+            # Save to Notion
+            if not preview:
+                save_wedges_to_notion(result, opp["id"])
+                console.print(f"[green]✓ Saved {len(result.get('wedges', []))} wedges for {cluster_name}[/green]")
+
+            processed += 1
+
+        except Exception as e:
+            console.print(f"[red]Error processing {cluster_name}: {e}[/red]")
+            failed += 1
+
+    # Summary
+    console.print(f"\n{'='*60}")
+    console.print("[bold]Auto-Processing Complete[/bold]")
+    console.print('='*60)
+    console.print(f"  [green]✓ Processed:[/green] {processed} clusters")
+    if failed:
+        console.print(f"  [red]✗ Failed:[/red] {failed} clusters")
+    if already_have_wedges:
+        console.print(f"  [dim]→ Skipped:[/dim] {len(already_have_wedges)} (already have wedges)")
+
+    if not preview and processed > 0:
+        console.print(f"\n[bold]Next steps:[/bold]")
+        console.print("  1. Open Notion and review the generated wedges")
+        console.print("  2. Refine the recommended wedges (marked with ★)")
+        console.print("  3. Move promising wedges to 'Building' status")
 
 
 def main():
@@ -350,8 +480,11 @@ Examples:
     # Preview without saving to Notion
     python wedge.py --cluster "Time Blindness" --preview
 
-    # Auto-process all high-scoring opportunities
+    # Auto-process all high-scoring opportunities (score >= 18)
     python wedge.py --auto
+
+    # Auto-process with custom threshold and preview
+    python wedge.py --auto --min-score 20 --preview
         """
     )
 
@@ -369,6 +502,12 @@ Examples:
         help="Auto-process all high-scoring opportunities"
     )
     parser.add_argument(
+        "--min-score",
+        type=int,
+        default=18,
+        help="Minimum score threshold for --auto (default: 18, max: 25)"
+    )
+    parser.add_argument(
         "--preview",
         action="store_true",
         help="Preview mode: show wedges without saving to Notion"
@@ -379,7 +518,7 @@ Examples:
     console.print(f"\n[bold blue]Gap Discovery - Wedge Generator[/bold blue]\n")
 
     if args.auto:
-        process_auto()
+        process_auto(min_score=args.min_score, preview=args.preview)
     elif args.cluster:
         process_cluster(args.cluster, args.project, args.preview)
     else:

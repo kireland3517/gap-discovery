@@ -55,8 +55,8 @@ def format_signals_for_prompt(signals: list[dict]) -> str:
     return "\n\n".join(formatted)
 
 
-def run_clustering(signals_text: str) -> list[dict]:
-    """Send signals to Claude for clustering."""
+def run_clustering(signals_text: str) -> dict:
+    """Send signals to Claude for deep research synthesis."""
     client = get_claude_client()
     prompt_template = load_prompt_template()
 
@@ -68,71 +68,148 @@ def run_clustering(signals_text: str) -> list[dict]:
         TextColumn("[progress.description]{task.description}"),
         console=console
     ) as progress:
-        task = progress.add_task("Analyzing patterns with Claude...", total=None)
+        task = progress.add_task("Running deep research synthesis...", total=None)
 
         response = client.messages.create(
             model=config.CLAUDE_MODEL,
-            max_tokens=4096,
+            max_tokens=8192,
             messages=[{"role": "user", "content": prompt}]
         )
 
-        progress.update(task, description="[green]✓[/green] Analysis complete")
+        progress.update(task, description="[green]✓[/green] Synthesis complete")
 
     # Extract JSON from response
     response_text = response.content[0].text
 
-    # Find JSON in response
+    # Find JSON in response - try object format first (new), then array (legacy)
     try:
-        # Try to find JSON array in the response
+        # Try to find JSON object (new format with patterns + meta)
+        start = response_text.find("{")
+        end = response_text.rfind("}") + 1
+        if start >= 0 and end > start:
+            json_str = response_text[start:end]
+            result = json.loads(json_str)
+            # If it has "patterns" key, it's the new format
+            if "patterns" in result:
+                return result
+            # Otherwise, wrap single pattern in expected format
+            return {"patterns": [result], "meta": {}}
+    except json.JSONDecodeError:
+        pass
+
+    # Try legacy array format
+    try:
         start = response_text.find("[")
         end = response_text.rfind("]") + 1
         if start >= 0 and end > start:
             json_str = response_text[start:end]
             clusters = json.loads(json_str)
-            return clusters
+            # Convert legacy format to new format
+            return {"patterns": clusters, "meta": {}}
     except json.JSONDecodeError:
         pass
 
     # If JSON parsing fails, show the raw response
     console.print("[yellow]Warning: Could not parse AI response as JSON[/yellow]")
     console.print(Panel(response_text, title="Raw AI Response"))
-    return []
+    return {"patterns": [], "meta": {}}
 
 
-def display_clusters(clusters: list[dict]):
-    """Display discovered clusters in a nice format."""
-    console.print("\n[bold]Discovered Pain Clusters[/bold]\n")
+def display_clusters(result: dict):
+    """Display discovered patterns in a nice format."""
+    patterns = result.get("patterns", [])
+    meta = result.get("meta", {})
 
-    for i, cluster in enumerate(clusters, 1):
-        # Cluster header
-        theme = cluster.get("theme", "Unknown")
-        emotion = cluster.get("emotional_tone", "Unknown")
-        blame = cluster.get("blame_direction", "Unknown")
+    console.print("\n[bold]Deep Research Synthesis Results[/bold]\n")
 
-        theme_color = {"Emotional": "purple", "Functional": "blue", "Behavioral": "green"}.get(theme, "white")
+    # Display meta information if available
+    if meta:
+        if meta.get("total_signals_analyzed"):
+            console.print(f"[dim]Signals analyzed: {meta['total_signals_analyzed']}[/dim]")
+        if meta.get("dominant_emotion"):
+            console.print(f"[dim]Dominant emotion: {meta['dominant_emotion']}[/dim]")
+        if meta.get("common_tools_mentioned"):
+            console.print(f"[dim]Tools mentioned: {', '.join(meta['common_tools_mentioned'][:5])}[/dim]")
+        console.print("")
 
-        console.print(f"[bold {theme_color}]Cluster {i}: {cluster.get('cluster_name', 'Unnamed')}[/bold {theme_color}]")
-        console.print(f"  Theme: {theme} | Emotion: {emotion} | Blame: {blame}")
+    console.print(f"[bold]Discovered {len(patterns)} Pain Patterns[/bold]\n")
+
+    for i, pattern in enumerate(patterns, 1):
+        # Pattern header - support both old and new field names
+        name = pattern.get("pattern_name") or pattern.get("cluster_name", "Unnamed")
+        emotion = pattern.get("emotional_tone", "Unknown")
+        blame = pattern.get("blame_direction", "Unknown")
+        intensity = pattern.get("emotional_intensity", "")
+        frequency = pattern.get("frequency", "")
+
+        # Color by emotion
+        emotion_colors = {
+            "Frustration": "red",
+            "Shame": "purple",
+            "Overwhelm": "yellow",
+            "Anxiety": "orange",
+            "Resignation": "gray"
+        }
+        emotion_color = emotion_colors.get(emotion, "white")
+
+        console.print(f"[bold {emotion_color}]Pattern {i}: {name}[/bold {emotion_color}]")
+
+        # Core frustration
+        frustration = pattern.get("recurring_frustration", "")
+        if frustration:
+            console.print(f"  [bold]Core pain:[/bold] {frustration}")
+
+        # Metadata line
+        meta_parts = []
+        if emotion:
+            meta_parts.append(f"Emotion: {emotion}")
+        if intensity:
+            meta_parts.append(f"Intensity: {intensity}")
+        if blame:
+            meta_parts.append(f"Blame: {blame}")
+        if frequency:
+            meta_parts.append(f"Frequency: {frequency}")
+        if meta_parts:
+            console.print(f"  [dim]{' | '.join(meta_parts)}[/dim]")
+
+        # Abandonment trigger
+        trigger = pattern.get("abandonment_trigger")
+        if trigger:
+            console.print(f"  [red]Quit because:[/red] {trigger}")
+
+        # Workarounds
+        workarounds = pattern.get("workarounds") or pattern.get("workarounds_mentioned", [])
+        if workarounds:
+            console.print(f"  [yellow]Workarounds:[/yellow] {', '.join(workarounds[:3])}")
 
         # Sample quotes
-        quotes = cluster.get("representative_quotes", [])
+        quotes = pattern.get("representative_quotes", [])
         if quotes:
-            console.print("  [dim]Sample quotes:[/dim]")
+            console.print("  [dim]Representative quotes:[/dim]")
             for quote in quotes[:3]:
                 short_quote = quote[:80] + "..." if len(quote) > 80 else quote
                 console.print(f"    • \"{short_quote}\"")
 
         # Language patterns
-        patterns = cluster.get("language_patterns", [])
-        if patterns:
-            console.print(f"  [dim]Patterns:[/dim] {', '.join(patterns[:3])}")
+        lang_patterns = pattern.get("language_patterns", [])
+        if lang_patterns:
+            console.print(f"  [dim]Language patterns:[/dim] {', '.join(lang_patterns[:3])}")
 
         console.print("")
 
+    # Research gaps
+    gaps = meta.get("research_gaps", [])
+    if gaps:
+        console.print("[dim]Research gaps (couldn't determine from data):[/dim]")
+        for gap in gaps:
+            console.print(f"  • {gap}")
 
-def save_clusters_to_notion(clusters: list[dict], project_id: str, signals: list[dict]):
-    """Save clusters to Notion database."""
-    console.print("\n[bold]Saving clusters to Notion...[/bold]")
+
+def save_clusters_to_notion(result: dict, project_id: str, signals: list[dict]):
+    """Save patterns to Notion database."""
+    patterns = result.get("patterns", [])
+
+    console.print("\n[bold]Saving patterns to Notion...[/bold]")
 
     # Build a map of quotes to signal IDs for linking
     quote_to_id = {}
@@ -147,27 +224,53 @@ def save_clusters_to_notion(clusters: list[dict], project_id: str, signals: list
         console=console
     ) as progress:
 
-        for cluster in clusters:
-            task = progress.add_task(f"Saving: {cluster.get('cluster_name', 'Unnamed')}...", total=None)
+        for pattern in patterns:
+            # Support both old and new field names
+            name = pattern.get("pattern_name") or pattern.get("cluster_name", "Unnamed Pattern")
+            task = progress.add_task(f"Saving: {name}...", total=None)
 
             # Find signal IDs that match representative quotes
             signal_ids = []
-            for quote in cluster.get("representative_quotes", []):
+            for quote in pattern.get("representative_quotes", []):
                 for key, sig_id in quote_to_id.items():
                     if key in quote or quote[:100] in key:
                         signal_ids.append(sig_id)
                         break
 
             # Format language patterns as text
-            patterns = cluster.get("language_patterns", [])
-            patterns_text = "\n".join([f"• {p}" for p in patterns])
+            lang_patterns = pattern.get("language_patterns", [])
+            patterns_text = "\n".join([f"• {p}" for p in lang_patterns])
+
+            # Add core frustration and abandonment trigger if present
+            frustration = pattern.get("recurring_frustration", "")
+            trigger = pattern.get("abandonment_trigger")
+            if frustration:
+                patterns_text = f"Core pain: {frustration}\n\n{patterns_text}"
+            if trigger:
+                patterns_text += f"\n\nQuit because: {trigger}"
+
+            # Map emotional tone - handle both old values and "External" blame
+            emotion = pattern.get("emotional_tone", "Frustration")
+            blame = pattern.get("blame_direction", "Both")
+            if blame == "External" or blame == "Mixed":
+                blame = "Both"  # Map to existing Notion options
+
+            # Infer theme from emotion if not present
+            theme = pattern.get("theme")
+            if not theme:
+                if emotion in ["Shame", "Anxiety", "Overwhelm"]:
+                    theme = "Emotional"
+                elif emotion == "Frustration":
+                    theme = "Functional"
+                else:
+                    theme = "Behavioral"
 
             try:
                 cluster_id = notion_sync.create_pain_cluster(
-                    cluster_name=cluster.get("cluster_name", "Unnamed Cluster"),
-                    theme=cluster.get("theme", "Functional"),
-                    emotional_tone=cluster.get("emotional_tone", "Frustration"),
-                    blame_direction=cluster.get("blame_direction", "Both"),
+                    cluster_name=name,
+                    theme=theme,
+                    emotional_tone=emotion,
+                    blame_direction=blame,
                     language_patterns=patterns_text,
                     project_id=project_id,
                     signal_ids=signal_ids[:5]  # Link up to 5 signals
@@ -176,10 +279,10 @@ def save_clusters_to_notion(clusters: list[dict], project_id: str, signals: list
                 # Also create a scored opportunity entry for this cluster
                 notion_sync.create_scored_opportunity(cluster_id)
 
-                progress.update(task, description=f"[green]✓[/green] Saved: {cluster.get('cluster_name', 'Unnamed')}")
+                progress.update(task, description=f"[green]✓[/green] Saved: {name}")
 
             except Exception as e:
-                progress.update(task, description=f"[red]✗[/red] Failed: {cluster.get('cluster_name', 'Unnamed')}: {e}")
+                progress.update(task, description=f"[red]✗[/red] Failed: {name}: {e}")
 
 
 def main():
@@ -247,27 +350,28 @@ Examples:
     # Format for AI
     signals_text = format_signals_for_prompt(signals)
 
-    # Run clustering
-    clusters = run_clustering(signals_text)
+    # Run deep research synthesis
+    result = run_clustering(signals_text)
+    patterns = result.get("patterns", [])
 
-    if not clusters:
-        console.print("[red]No clusters discovered. Check the AI response above.[/red]")
+    if not patterns:
+        console.print("[red]No patterns discovered. Check the AI response above.[/red]")
         sys.exit(1)
 
     # Display results
-    display_clusters(clusters)
+    display_clusters(result)
 
     # Save to Notion
     if not args.preview:
-        save_clusters_to_notion(clusters, project_id, signals)
+        save_clusters_to_notion(result, project_id, signals)
         console.print(f"\n[bold green]Done![/bold green]")
-        console.print(f"Created {len(clusters)} pain clusters with scored opportunity entries.")
+        console.print(f"Created {len(patterns)} pain patterns with scored opportunity entries.")
         console.print(f"\nNext steps:")
         console.print(f"  1. Open Notion and review the Pain Clusters")
         console.print(f"  2. Score each opportunity in the Scored Opportunities database")
-        console.print(f"  3. Run [cyan]python wedge.py --cluster \"Cluster Name\"[/cyan] for high-scoring clusters")
+        console.print(f"  3. Run [cyan]python wedge.py --auto[/cyan] to generate wedges for high-scoring clusters")
     else:
-        console.print("\n[yellow]Preview mode - clusters not saved to Notion[/yellow]")
+        console.print("\n[yellow]Preview mode - patterns not saved to Notion[/yellow]")
 
 
 if __name__ == "__main__":

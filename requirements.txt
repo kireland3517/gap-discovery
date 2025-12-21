@@ -10,6 +10,20 @@ praw>=7.7.0
 app-store-scraper>=0.3.5
 google-play-scraper>=1.2.4
 
+# TikTok scraper (requires: python -m playwright install)
+TikTokApi>=6.0.0
+
+# Amazon scraper dependencies
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+
+# Reddit search collector (no API key needed!)
+duckduckgo-search>=6.0.0
+
+# YouTube Data API client
+google-api-python-client>=2.0.0
+
 # Claude API client
 anthropic>=0.39.0
 

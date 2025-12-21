@@ -33,6 +33,11 @@ REDDIT_USER_AGENT = "GapDiscovery/1.0"
 # Get yours at: https://console.anthropic.com
 ANTHROPIC_API_KEY = ""
 
+# YouTube Data API v3 (for YouTube comments collector)
+# Get yours at: https://console.cloud.google.com/apis
+# Steps: Create project → Enable "YouTube Data API v3" → Create API Key
+YOUTUBE_API_KEY = ""
+
 # =============================================================================
 # MODEL SETTINGS
 # =============================================================================
