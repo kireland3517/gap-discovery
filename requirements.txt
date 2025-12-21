@@ -1,0 +1,14 @@
+# Gap Discovery OS - Dependencies
+
+# Notion API client
+notion-client>=2.0.0
+
+# Reddit API client
+praw>=7.7.0
+
+# Claude API client
+anthropic>=0.39.0
+
+# Utilities
+python-dateutil>=2.8.0
+rich>=13.0.0
