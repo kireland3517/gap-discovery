@@ -96,6 +96,13 @@ python cluster.py --project "Research"
 
 Use `--preview` to see what would be collected without saving.
 
+**Auto-classification:** All collectors automatically classify signals into pain types:
+- **Complaint**: General frustration, annoyance
+- **Abandonment**: Gave up, stopped using, switched away
+- **Workaround**: DIY solutions, hacks, "I ended up..."
+- **Shame/Self-blame**: "I should be able to", "why can't I"
+- **Tool blame**: Blaming the app/tool/service
+
 ### Step 2: Cluster Pain Patterns (Lane 2)
 
 ```bash
@@ -111,6 +118,22 @@ Claude analyzes your signals and groups them into pain clusters with:
 This also creates a Scored Opportunity entry for each cluster.
 
 ### Step 3: Score Opportunities (Lane 3)
+
+Use the scoring helper to track opportunities:
+
+```bash
+# List all opportunities with scores
+python score.py --list
+
+# Show only unscored opportunities
+python score.py --unscored
+
+# Show top-scoring opportunities
+python score.py --top
+
+# Show scoring guide
+python score.py --guide
+```
 
 Open Notion and score each opportunity on 5 dimensions (1-5):
 
@@ -199,7 +222,10 @@ python collector_amazon.py --search "planner adhd" --project "Planner Research"
 | `--preview` | Show without saving | All scripts |
 | `--stars` | Filter by rating (1-5) | App stores, Amazon |
 | `--auto` | Process all high-scoring | wedge.py |
-| `--min-score` | Threshold for --auto | wedge.py |
+| `--min-score` | Threshold for --auto | wedge.py, score.py |
+| `--unscored` | Show unscored only | score.py |
+| `--top` | Show high-scoring only | score.py |
+| `--guide` | Show scoring guide | score.py |
 
 ## File Structure
 
@@ -218,7 +244,9 @@ gap-discovery/
 ├── collector_amazon.py         # Amazon reviews
 ├── collector.py                # Reddit via API (often blocked)
 │
+├── signal_classifier.py    # Auto-classify signals by pain type
 ├── cluster.py              # Lane 2: Deep research synthesis
+├── score.py                # Lane 3: Scoring helper CLI
 ├── wedge.py                # Lane 4: Solution design
 │
 └── prompts/

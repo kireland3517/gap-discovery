@@ -18,6 +18,7 @@ from rich.table import Table
 
 import config
 import notion_sync
+from signal_classifier import classify_signal, get_signal_type_color
 
 console = Console()
 
@@ -140,6 +141,26 @@ def collect_signals(
 
     # Push to Notion
     if signals:
+        # Classify signals
+        console.print("\nClassifying signals...")
+        type_counts = {"Complaint": 0, "Abandonment": 0, "Workaround": 0,
+                       "Shame/Self-blame": 0, "Tool blame": 0, "Unclassified": 0}
+
+        for signal in signals:
+            signal_type = classify_signal(signal["quote"])
+            signal["signal_type"] = signal_type
+            if signal_type:
+                type_counts[signal_type] += 1
+            else:
+                type_counts["Unclassified"] += 1
+
+        # Show classification summary
+        console.print("[dim]Classification breakdown:[/dim]")
+        for sig_type, count in type_counts.items():
+            if count > 0:
+                color = get_signal_type_color(sig_type)
+                console.print(f"  [{color}]{sig_type}:[/{color}] {count}")
+
         console.print("\nPushing to Notion...")
 
         with Progress(
@@ -157,7 +178,8 @@ def collect_signals(
                         source_url=signal["url"],
                         subreddit=signal["source"],  # Reusing subreddit field for app name
                         project_id=project_id,
-                        platform="App Store"
+                        platform="App Store",
+                        signal_type=signal.get("signal_type")
                     )
                 except Exception as e:
                     console.print(f"[yellow]Warning: Failed to add signal: {e}[/yellow]")
@@ -176,7 +198,7 @@ def show_preview(
     star_filter: list[int] = None,
     limit: int = 10
 ):
-    """Preview what signals would be collected."""
+    """Preview what signals would be collected with classification."""
     console.print("\n[bold]Preview Mode[/bold] - showing first 10 results\n")
 
     signals = fetch_reviews(
@@ -187,15 +209,22 @@ def show_preview(
         star_filter=star_filter
     )
 
+    # Classify signals for preview
+    for signal in signals:
+        signal["signal_type"] = classify_signal(signal["quote"])
+
     table = Table(show_header=True, header_style="bold")
+    table.add_column("Signal Type", width=14)
     table.add_column("Stars", width=6, justify="center")
-    table.add_column("Review", width=70)
+    table.add_column("Review", width=55)
 
     for signal in signals[:10]:
-        quote = signal["quote"][:100] + "..." if len(signal["quote"]) > 100 else signal["quote"]
+        quote = signal["quote"][:70] + "..." if len(signal["quote"]) > 70 else signal["quote"]
         quote = quote.replace("\n", " ")
         stars = "*" * signal["rating"]
-        table.add_row(stars, quote)
+        sig_type = signal.get("signal_type") or "—"
+        color = get_signal_type_color(sig_type)
+        table.add_row(f"[{color}]{sig_type}[/{color}]", stars, quote)
 
     console.print(table)
 
