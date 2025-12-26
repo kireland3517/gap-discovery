@@ -444,7 +444,10 @@ def main():
     with col4:
         if selected_topic and st.button("Synthesize"):
             with st.spinner("Analyzing with Claude..."):
-                stats = synthesize.run_synthesis(selected_topic)
+                synth_topic_id = database.get_or_create_topic(selected_topic)
+                stats = synthesize.run_synthesis(selected_topic, process_all=True)
+                # Reset processed flag so posts can be re-analyzed
+                database.reset_processed_posts(synth_topic_id)
                 st.success(f"Created {stats.get('themes_created', 0)} themes!")
                 st.rerun()
 

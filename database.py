@@ -346,5 +346,14 @@ def delete_theme(theme_id: int):
     conn.close()
 
 
+def reset_processed_posts(topic_id: int):
+    """Reset all posts for a topic to unprocessed state."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE posts SET processed = 0 WHERE topic_id = ?", (topic_id,))
+    conn.commit()
+    conn.close()
+
+
 if __name__ == "__main__":
     init_database()
