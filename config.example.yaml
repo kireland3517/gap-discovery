@@ -1,0 +1,56 @@
+# Research Pattern Discovery System Configuration
+# Copy this file to config.yaml
+# Set your API key via environment variable: ANTHROPIC_API_KEY=sk-ant-xxxxx
+
+anthropic:
+  # API key loaded from ANTHROPIC_API_KEY environment variable
+  model: "claude-sonnet-4-20250514"
+
+scraping:
+  delay_min: 3  # Minimum seconds between requests
+  delay_max: 5  # Maximum seconds between requests
+  max_retries: 3
+  timeout: 30  # Page load timeout in seconds
+  user_agents:
+    - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    - "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"
+    - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15"
+    - "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+# Research topics - add your topics here
+# Each topic needs 12-20 seed keywords for best results
+topics:
+  - name: "Your Topic Name"
+    max_posts_per_keyword: 50
+    keywords:
+      - "keyword phrase 1"
+      - "keyword phrase 2"
+      - "keyword phrase 3"
+      # Add 10-18 more keywords...
+
+# Keyword discovery settings
+discovery:
+  promotion_threshold: 3  # How many times a keyword must appear before promotion
+  max_discovered_per_topic: 10  # Max auto-discovered keywords per topic
+
+# Theme synthesis settings
+synthesis:
+  min_posts_per_theme: 5  # Minimum posts to count as valid theme
+  batch_size: 50  # Posts per Claude API call
+  intensity_keywords:
+    high:
+      - "frustrated"
+      - "hate"
+      - "gave up"
+      - "impossible"
+      - "nightmare"
+    medium:
+      - "annoying"
+      - "confusing"
+      - "struggling"
+      - "stuck"
+    low:
+      - "wondering"
+      - "unsure"
+      - "considering"

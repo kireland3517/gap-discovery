@@ -1,32 +1,14 @@
-# Gap Discovery OS - Dependencies
+# Research Pattern Discovery System - Dependencies
 
-# Notion API client
-notion-client>=2.0.0
-
-# Reddit API client (currently blocked by Reddit's new policy)
-praw>=7.7.0
-
-# App Store scrapers (no API key needed!)
-app-store-scraper>=0.3.5
-google-play-scraper>=1.2.4
-
-# TikTok scraper (requires: python -m playwright install)
-TikTokApi>=6.0.0
-
-# Amazon scraper dependencies
-requests>=2.31.0
-beautifulsoup4>=4.12.0
-lxml>=5.0.0
-
-# Reddit search collector (no API key needed!)
-duckduckgo-search>=6.0.0
-
-# YouTube Data API client
-google-api-python-client>=2.0.0
+# Browser automation for scraping
+playwright>=1.40.0
 
 # Claude API client
 anthropic>=0.39.0
 
-# Utilities
-python-dateutil>=2.8.0
-rich>=13.0.0
+# Dashboard and visualization
+streamlit>=1.29.0
+plotly>=5.18.0
+
+# Configuration
+pyyaml>=6.0
