@@ -1207,211 +1207,217 @@ async def run_pain_scrapers_async(scrapers: list = None) -> dict:
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
+        context = None
+        page = None
 
-        # Get tools to scrape from config
-        tools = pain_config.get("tool_reviews", {}).get("tools", [])
-        tool_names = [t["name"] for t in tools]
+        try:
+            # Get tools to scrape from config
+            tools = pain_config.get("tool_reviews", {}).get("tools", [])
+            tool_names = [t["name"] for t in tools]
 
-        # Create browser context
-        context = await browser.new_context(
-            user_agent=get_random_user_agent(config),
-            viewport={"width": 1920, "height": 1080}
-        )
-        page = await context.new_page()
+            # Create browser context
+            context = await browser.new_context(
+                user_agent=get_random_user_agent(config),
+                viewport={"width": 1920, "height": 1080}
+            )
+            page = await context.new_page()
 
-        # --- Google Autocomplete ---
-        if "google_autocomplete" in scrapers:
-            print("\n[Google Autocomplete]")
-            for tool_name in tool_names:
-                print(f"  Tool: {tool_name}")
-                try:
-                    suggestions = await with_retry(scrape_google_autocomplete, page, tool_name, config)
-                    for s in suggestions:
-                        database.add_search_signal(
-                            signal_type="autocomplete",
-                            query=s["query"],
-                            result_text=s["suggestion"],
-                            position=s.get("position"),
-                            tool=s.get("tool"),
-                            source_url="google.com"
-                        )
-                        stats["autocomplete_suggestions"] += 1
-                    print(f"    Saved {len(suggestions)} suggestions")
-                except Exception as e:
-                    print(f"    Error: {e}")
-                    stats["errors"] += 1
-
-        # --- Google PAA ---
-        if "google_paa" in scrapers:
-            print("\n[Google People Also Ask]")
-            for tool_name in tool_names:
-                print(f"  Tool: {tool_name}")
-                try:
-                    questions = await with_retry(scrape_google_paa, page, tool_name, config)
-                    for q in questions:
-                        database.add_search_signal(
-                            signal_type="paa",
-                            query=q["query"],
-                            result_text=q["question"],
-                            tool=q.get("tool"),
-                            source_url="google.com"
-                        )
-                        stats["paa_questions"] += 1
-                    print(f"    Saved {len(questions)} PAA questions")
-                except Exception as e:
-                    print(f"    Error: {e}")
-                    stats["errors"] += 1
-
-        # --- G2 Reviews ---
-        if "g2_reviews" in scrapers:
-            print("\n[G2 Reviews]")
-            for tool_config_item in tools:
-                if tool_config_item.get("g2_slug"):
-                    print(f"  Tool: {tool_config_item['name']}")
+            # --- Google Autocomplete ---
+            if "google_autocomplete" in scrapers:
+                print("\n[Google Autocomplete]")
+                for tool_name in tool_names:
+                    print(f"  Tool: {tool_name}")
                     try:
-                        reviews = await with_retry(scrape_g2_reviews, page, tool_config_item, config)
-                        for r in reviews:
-                            database.add_tool_review(
-                                tool=r["tool"],
-                                platform=r["platform"],
-                                star_rating=r["star_rating"],
-                                reviewer_role=r.get("reviewer_role"),
-                                cons_text=r["cons_text"],
-                                source_url=r["source_url"]
+                        suggestions = await with_retry(scrape_google_autocomplete, page, tool_name, config)
+                        for s in suggestions:
+                            database.add_search_signal(
+                                signal_type="autocomplete",
+                                query=s["query"],
+                                result_text=s["suggestion"],
+                                position=s.get("position"),
+                                tool=s.get("tool"),
+                                source_url="google.com"
                             )
-                            stats["reviews_collected"] += 1
-                        print(f"    Saved {len(reviews)} reviews")
+                            stats["autocomplete_suggestions"] += 1
+                        print(f"    Saved {len(suggestions)} suggestions")
                     except Exception as e:
                         print(f"    Error: {e}")
                         stats["errors"] += 1
 
-        # --- Capterra Reviews ---
-        if "capterra_reviews" in scrapers:
-            print("\n[Capterra Reviews]")
-            for tool_config_item in tools:
-                if tool_config_item.get("capterra_id"):
-                    print(f"  Tool: {tool_config_item['name']}")
+            # --- Google PAA ---
+            if "google_paa" in scrapers:
+                print("\n[Google People Also Ask]")
+                for tool_name in tool_names:
+                    print(f"  Tool: {tool_name}")
                     try:
-                        reviews = await with_retry(scrape_capterra_reviews, page, tool_config_item, config)
-                        for r in reviews:
-                            database.add_tool_review(
-                                tool=r["tool"],
-                                platform=r["platform"],
-                                star_rating=r["star_rating"],
-                                reviewer_role=r.get("reviewer_role"),
-                                reviewer_industry=r.get("reviewer_industry"),
-                                cons_text=r["cons_text"],
-                                source_url=r["source_url"]
+                        questions = await with_retry(scrape_google_paa, page, tool_name, config)
+                        for q in questions:
+                            database.add_search_signal(
+                                signal_type="paa",
+                                query=q["query"],
+                                result_text=q["question"],
+                                tool=q.get("tool"),
+                                source_url="google.com"
                             )
-                            stats["reviews_collected"] += 1
-                        print(f"    Saved {len(reviews)} reviews")
+                            stats["paa_questions"] += 1
+                        print(f"    Saved {len(questions)} PAA questions")
                     except Exception as e:
                         print(f"    Error: {e}")
                         stats["errors"] += 1
 
-        # --- Community Forums ---
-        if "zapier_community" in scrapers:
-            print("\n[Zapier Community]")
-            try:
-                posts = await with_retry(scrape_zapier_community, page, config)
-                for post in posts:
-                    # Add to posts table with source marking
-                    database.add_post(
-                        topic_id=1,  # Will be linked to topic later
-                        keyword_id=None,
-                        source=post["source"],
-                        url=post["url"],
-                        title=post["title"],
-                        content=post["content"],
-                        author=post.get("author", "")
-                    )
-                    stats["community_posts"] += 1
-                print(f"  Saved {len(posts)} posts")
-            except Exception as e:
-                print(f"  Error: {e}")
-                stats["errors"] += 1
+            # --- G2 Reviews ---
+            if "g2_reviews" in scrapers:
+                print("\n[G2 Reviews]")
+                for tool_config_item in tools:
+                    if tool_config_item.get("g2_slug"):
+                        print(f"  Tool: {tool_config_item['name']}")
+                        try:
+                            reviews = await with_retry(scrape_g2_reviews, page, tool_config_item, config)
+                            for r in reviews:
+                                database.add_tool_review(
+                                    tool=r["tool"],
+                                    platform=r["platform"],
+                                    star_rating=r["star_rating"],
+                                    reviewer_role=r.get("reviewer_role"),
+                                    cons_text=r["cons_text"],
+                                    source_url=r["source_url"]
+                                )
+                                stats["reviews_collected"] += 1
+                            print(f"    Saved {len(reviews)} reviews")
+                        except Exception as e:
+                            print(f"    Error: {e}")
+                            stats["errors"] += 1
 
-        if "make_community" in scrapers:
-            print("\n[Make Community]")
-            try:
-                posts = await with_retry(scrape_make_community, page, config)
-                for post in posts:
-                    database.add_post(
-                        topic_id=1,
-                        keyword_id=None,
-                        source=post["source"],
-                        url=post["url"],
-                        title=post["title"],
-                        content=post["content"],
-                        author=post.get("author", "")
-                    )
-                    stats["community_posts"] += 1
-                print(f"  Saved {len(posts)} posts")
-            except Exception as e:
-                print(f"  Error: {e}")
-                stats["errors"] += 1
+            # --- Capterra Reviews ---
+            if "capterra_reviews" in scrapers:
+                print("\n[Capterra Reviews]")
+                for tool_config_item in tools:
+                    if tool_config_item.get("capterra_id"):
+                        print(f"  Tool: {tool_config_item['name']}")
+                        try:
+                            reviews = await with_retry(scrape_capterra_reviews, page, tool_config_item, config)
+                            for r in reviews:
+                                database.add_tool_review(
+                                    tool=r["tool"],
+                                    platform=r["platform"],
+                                    star_rating=r["star_rating"],
+                                    reviewer_role=r.get("reviewer_role"),
+                                    reviewer_industry=r.get("reviewer_industry"),
+                                    cons_text=r["cons_text"],
+                                    source_url=r["source_url"]
+                                )
+                                stats["reviews_collected"] += 1
+                            print(f"    Saved {len(reviews)} reviews")
+                        except Exception as e:
+                            print(f"    Error: {e}")
+                            stats["errors"] += 1
 
-        if "hubspot_community" in scrapers:
-            print("\n[HubSpot Community]")
-            try:
-                posts = await with_retry(scrape_hubspot_community, page, config)
-                for post in posts:
-                    database.add_post(
-                        topic_id=1,
-                        keyword_id=None,
-                        source=post["source"],
-                        url=post["url"],
-                        title=post["title"],
-                        content=post["content"],
-                        author=post.get("author", "")
-                    )
-                    stats["community_posts"] += 1
-                print(f"  Saved {len(posts)} posts")
-            except Exception as e:
-                print(f"  Error: {e}")
-                stats["errors"] += 1
+            # --- Community Forums ---
+            if "zapier_community" in scrapers:
+                print("\n[Zapier Community]")
+                try:
+                    posts = await with_retry(scrape_zapier_community, page, config)
+                    for post in posts:
+                        # Add to posts table with source marking
+                        database.add_post(
+                            topic_id=1,  # Will be linked to topic later
+                            keyword_id=None,
+                            source=post["source"],
+                            url=post["url"],
+                            title=post["title"],
+                            content=post["content"],
+                            author=post.get("author", "")
+                        )
+                        stats["community_posts"] += 1
+                    print(f"  Saved {len(posts)} posts")
+                except Exception as e:
+                    print(f"  Error: {e}")
+                    stats["errors"] += 1
 
-        # --- Job Scrapers ---
-        if "linkedin_jobs" in scrapers:
-            print("\n[LinkedIn Jobs]")
-            try:
-                jobs = await with_retry(scrape_linkedin_jobs, page, config)
-                for job in jobs:
-                    database.add_job_signal(
-                        platform=job["platform"],
-                        job_title=job["job_title"],
-                        company=job.get("company"),
-                        description_snippet=job["description_snippet"],
-                        detected_signals=job["detected_signals"],
-                        source_url=job["source_url"]
-                    )
-                    stats["job_signals"] += 1
-                print(f"  Saved {len(jobs)} job signals")
-            except Exception as e:
-                print(f"  Error: {e}")
-                stats["errors"] += 1
+            if "make_community" in scrapers:
+                print("\n[Make Community]")
+                try:
+                    posts = await with_retry(scrape_make_community, page, config)
+                    for post in posts:
+                        database.add_post(
+                            topic_id=1,
+                            keyword_id=None,
+                            source=post["source"],
+                            url=post["url"],
+                            title=post["title"],
+                            content=post["content"],
+                            author=post.get("author", "")
+                        )
+                        stats["community_posts"] += 1
+                    print(f"  Saved {len(posts)} posts")
+                except Exception as e:
+                    print(f"  Error: {e}")
+                    stats["errors"] += 1
 
-        if "indeed_jobs" in scrapers:
-            print("\n[Indeed Jobs]")
-            try:
-                jobs = await with_retry(scrape_indeed_jobs, page, config)
-                for job in jobs:
-                    database.add_job_signal(
-                        platform=job["platform"],
-                        job_title=job["job_title"],
-                        company=job.get("company"),
-                        description_snippet=job["description_snippet"],
-                        detected_signals=job["detected_signals"],
-                        source_url=job["source_url"]
-                    )
-                    stats["job_signals"] += 1
-                print(f"  Saved {len(jobs)} job signals")
-            except Exception as e:
-                print(f"  Error: {e}")
-                stats["errors"] += 1
+            if "hubspot_community" in scrapers:
+                print("\n[HubSpot Community]")
+                try:
+                    posts = await with_retry(scrape_hubspot_community, page, config)
+                    for post in posts:
+                        database.add_post(
+                            topic_id=1,
+                            keyword_id=None,
+                            source=post["source"],
+                            url=post["url"],
+                            title=post["title"],
+                            content=post["content"],
+                            author=post.get("author", "")
+                        )
+                        stats["community_posts"] += 1
+                    print(f"  Saved {len(posts)} posts")
+                except Exception as e:
+                    print(f"  Error: {e}")
+                    stats["errors"] += 1
 
-        await context.close()
-        await browser.close()
+            # --- Job Scrapers ---
+            if "linkedin_jobs" in scrapers:
+                print("\n[LinkedIn Jobs]")
+                try:
+                    jobs = await with_retry(scrape_linkedin_jobs, page, config)
+                    for job in jobs:
+                        database.add_job_signal(
+                            platform=job["platform"],
+                            job_title=job["job_title"],
+                            company=job.get("company"),
+                            description_snippet=job["description_snippet"],
+                            detected_signals=job["detected_signals"],
+                            source_url=job["source_url"]
+                        )
+                        stats["job_signals"] += 1
+                    print(f"  Saved {len(jobs)} job signals")
+                except Exception as e:
+                    print(f"  Error: {e}")
+                    stats["errors"] += 1
+
+            if "indeed_jobs" in scrapers:
+                print("\n[Indeed Jobs]")
+                try:
+                    jobs = await with_retry(scrape_indeed_jobs, page, config)
+                    for job in jobs:
+                        database.add_job_signal(
+                            platform=job["platform"],
+                            job_title=job["job_title"],
+                            company=job.get("company"),
+                            description_snippet=job["description_snippet"],
+                            detected_signals=job["detected_signals"],
+                            source_url=job["source_url"]
+                        )
+                        stats["job_signals"] += 1
+                    print(f"  Saved {len(jobs)} job signals")
+                except Exception as e:
+                    print(f"  Error: {e}")
+                    stats["errors"] += 1
+
+        finally:
+            # Ensure browser resources are always cleaned up
+            if context:
+                await context.close()
+            await browser.close()
 
     # Print summary
     print("\n" + "=" * 50)
@@ -1568,31 +1574,33 @@ async def run_scraper_async(topic_name: str = None, platforms: list = None) -> d
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
 
-        for topic in topics_to_scrape:
-            print(f"\nScraping topic: {topic['name']}")
-            print(f"Platforms: {', '.join(platforms)} (concurrent)")
-            topic_id = database.get_or_create_topic(topic["name"])
-            max_posts = topic.get("max_posts_per_keyword", 50)
-            topic_keywords = topic["keywords"]
+        try:
+            for topic in topics_to_scrape:
+                print(f"\nScraping topic: {topic['name']}")
+                print(f"Platforms: {', '.join(platforms)} (concurrent)")
+                topic_id = database.get_or_create_topic(topic["name"])
+                max_posts = topic.get("max_posts_per_keyword", 50)
+                topic_keywords = topic["keywords"]
 
-            for keyword in topic_keywords:
-                print(f"  Keyword: '{keyword}'")
-                keyword_id = database.add_keyword(topic_id, keyword, is_seed=True)
+                for keyword in topic_keywords:
+                    print(f"  Keyword: '{keyword}'")
+                    keyword_id = database.add_keyword(topic_id, keyword, is_seed=True)
 
-                # Scrape all platforms concurrently for this keyword
-                keyword_stats = await scrape_keyword_async(
-                    browser, keyword, topic_id, keyword_id,
-                    topic_keywords, max_posts, platforms, config
-                )
+                    # Scrape all platforms concurrently for this keyword
+                    keyword_stats = await scrape_keyword_async(
+                        browser, keyword, topic_id, keyword_id,
+                        topic_keywords, max_posts, platforms, config
+                    )
 
-                stats["posts_found"] += keyword_stats["posts_found"]
-                stats["posts_saved"] += keyword_stats["posts_saved"]
-                stats["duplicates_skipped"] += keyword_stats["duplicates_skipped"]
-                stats["keywords_processed"] += 1
+                    stats["posts_found"] += keyword_stats["posts_found"]
+                    stats["posts_saved"] += keyword_stats["posts_saved"]
+                    stats["duplicates_skipped"] += keyword_stats["duplicates_skipped"]
+                    stats["keywords_processed"] += 1
 
-            stats["topics_scraped"] += 1
-
-        await browser.close()
+                stats["topics_scraped"] += 1
+        finally:
+            # Ensure browser is always closed to prevent zombie processes
+            await browser.close()
 
     print(f"\nScraping complete!")
     print(f"  Topics scraped: {stats['topics_scraped']}")

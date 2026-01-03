@@ -453,31 +453,33 @@ def add_post(topic_id: int, keyword_id: int, source: str, url: str,
     conn = get_connection()
     cursor = conn.cursor()
 
-    # Generate content hash for deduplication
-    c_hash = content_hash(title, content)
-
-    # Check for content duplicate first
-    cursor.execute(
-        "SELECT id FROM posts WHERE content_hash = ? AND topic_id = ?",
-        (c_hash, topic_id)
-    )
-    if cursor.fetchone():
-        conn.close()
-        return None  # Content duplicate
-
     try:
+        # Generate content hash for deduplication
+        c_hash = content_hash(title, content)
+
+        # Check for content duplicate first
+        cursor.execute(
+            "SELECT id FROM posts WHERE content_hash = ? AND topic_id = ?",
+            (c_hash, topic_id)
+        )
+        if cursor.fetchone():
+            return None  # Content duplicate
+
         cursor.execute("""
             INSERT INTO posts (topic_id, keyword_id, source, url, title, content, author, content_hash, complaint_score)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (topic_id, keyword_id, source, url, title, content, author, c_hash, complaint_score))
         post_id = cursor.lastrowid
         conn.commit()
+        return post_id
     except sqlite3.IntegrityError:
         # Post with this URL already exists
-        post_id = None
-
-    conn.close()
-    return post_id
+        return None
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def get_posts_for_topic(topic_id: int, limit: int = None) -> list:
@@ -631,32 +633,37 @@ def add_pain_evidence(
     conn = get_connection()
     cursor = conn.cursor()
 
-    # Set AI suggested flags based on which fields are populated
-    task_ai_suggested = 1 if manual_task else 0
-    cost_ai_suggested = 1 if cost_impact else 0
-    tried_ai_suggested = 1 if failed_solutions else 0
-    better_ai_suggested = 1 if ideal_state else 0
+    try:
+        # Set AI suggested flags based on which fields are populated
+        task_ai_suggested = 1 if manual_task else 0
+        cost_ai_suggested = 1 if cost_impact else 0
+        tried_ai_suggested = 1 if failed_solutions else 0
+        better_ai_suggested = 1 if ideal_state else 0
 
-    cursor.execute("""
-        INSERT INTO pain_evidence (
+        cursor.execute("""
+            INSERT INTO pain_evidence (
+                topic_id, post_id, verbatim_quote, source, source_url,
+                manual_task, cost_impact, failed_solutions, ideal_state,
+                task_ai_suggested, cost_ai_suggested, tried_ai_suggested, better_ai_suggested,
+                human_lens_tags, industry, emotion, intensity,
+                ai_confidence, flagged_for_removal
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
             topic_id, post_id, verbatim_quote, source, source_url,
             manual_task, cost_impact, failed_solutions, ideal_state,
             task_ai_suggested, cost_ai_suggested, tried_ai_suggested, better_ai_suggested,
-            human_lens_tags, industry, emotion, intensity,
-            ai_confidence, flagged_for_removal
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        topic_id, post_id, verbatim_quote, source, source_url,
-        manual_task, cost_impact, failed_solutions, ideal_state,
-        task_ai_suggested, cost_ai_suggested, tried_ai_suggested, better_ai_suggested,
-        json.dumps(human_lens_tags or []), industry, emotion, intensity,
-        ai_confidence, 1 if flagged_for_removal else 0
-    ))
+            json.dumps(human_lens_tags or []), industry, emotion, intensity,
+            ai_confidence, 1 if flagged_for_removal else 0
+        ))
 
-    evidence_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    return evidence_id
+        evidence_id = cursor.lastrowid
+        conn.commit()
+        return evidence_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def get_pain_evidence_for_topic(
@@ -841,22 +848,27 @@ def add_pain_cluster(
     conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute("""
-        INSERT INTO pain_clusters (
+    try:
+        cursor.execute("""
+            INSERT INTO pain_clusters (
+                topic_id, name, description,
+                repeated_manual_tasks, trigger_moment, current_workaround, consequence_of_failure,
+                primary_question, dominant_emotion, dominant_lens, industries, intensity
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
             topic_id, name, description,
-            repeated_manual_tasks, trigger_moment, current_workaround, consequence_of_failure,
-            primary_question, dominant_emotion, dominant_lens, industries, intensity
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        topic_id, name, description,
-        json.dumps(repeated_manual_tasks or []), trigger_moment, current_workaround, consequence_of_failure,
-        primary_question, dominant_emotion, dominant_lens, json.dumps(industries or []), intensity
-    ))
+            json.dumps(repeated_manual_tasks or []), trigger_moment, current_workaround, consequence_of_failure,
+            primary_question, dominant_emotion, dominant_lens, json.dumps(industries or []), intensity
+        ))
 
-    cluster_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    return cluster_id
+        cluster_id = cursor.lastrowid
+        conn.commit()
+        return cluster_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def link_evidence_to_cluster(cluster_id: int, evidence_id: int, relevance_score: float = 1.0):

@@ -17,12 +17,132 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-from anthropic import Anthropic
+from anthropic import Anthropic, APIError, RateLimitError, APIConnectionError
 
 import database
 
 MAX_RETRIES = 3
 RETRY_DELAY = 2  # seconds, will be multiplied for exponential backoff
+
+
+# ============================================
+# CIRCUIT BREAKER FOR API COST PROTECTION
+# ============================================
+
+class CircuitBreaker:
+    """
+    Circuit breaker to prevent runaway API costs and infinite retry loops.
+
+    Opens circuit after consecutive failures or cost threshold exceeded.
+    Tracks estimated costs based on token usage.
+    """
+
+    # Approximate costs per 1K tokens (Claude 3.5 Sonnet pricing)
+    INPUT_COST_PER_1K = 0.003   # $3 per million input tokens
+    OUTPUT_COST_PER_1K = 0.015  # $15 per million output tokens
+
+    def __init__(
+        self,
+        max_consecutive_failures: int = 5,
+        max_session_cost_usd: float = 10.0,
+        cooldown_seconds: int = 300  # 5 minutes
+    ):
+        self.max_consecutive_failures = max_consecutive_failures
+        self.max_session_cost_usd = max_session_cost_usd
+        self.cooldown_seconds = cooldown_seconds
+
+        # State
+        self.consecutive_failures = 0
+        self.total_cost_usd = 0.0
+        self.total_api_calls = 0
+        self.circuit_open = False
+        self.circuit_opened_at = None
+        self.last_error = None
+
+    def is_open(self) -> bool:
+        """Check if circuit is open (blocking API calls)."""
+        if not self.circuit_open:
+            return False
+
+        # Check if cooldown period has passed
+        if self.circuit_opened_at:
+            elapsed = time.time() - self.circuit_opened_at
+            if elapsed >= self.cooldown_seconds:
+                print(f"  Circuit breaker: Cooldown elapsed, resetting circuit")
+                self.reset()
+                return False
+
+        return True
+
+    def get_status(self) -> dict:
+        """Get current circuit breaker status."""
+        return {
+            "circuit_open": self.circuit_open,
+            "consecutive_failures": self.consecutive_failures,
+            "total_cost_usd": round(self.total_cost_usd, 4),
+            "total_api_calls": self.total_api_calls,
+            "last_error": str(self.last_error) if self.last_error else None
+        }
+
+    def record_success(self, input_tokens: int = 0, output_tokens: int = 0):
+        """Record a successful API call."""
+        self.consecutive_failures = 0
+        self.total_api_calls += 1
+
+        # Estimate cost
+        cost = (input_tokens / 1000 * self.INPUT_COST_PER_1K +
+                output_tokens / 1000 * self.OUTPUT_COST_PER_1K)
+        self.total_cost_usd += cost
+
+        # Check cost threshold
+        if self.total_cost_usd >= self.max_session_cost_usd:
+            self._open_circuit(f"Session cost limit exceeded: ${self.total_cost_usd:.2f}")
+
+    def record_failure(self, error: Exception):
+        """Record a failed API call."""
+        self.consecutive_failures += 1
+        self.total_api_calls += 1
+        self.last_error = error
+
+        if self.consecutive_failures >= self.max_consecutive_failures:
+            self._open_circuit(f"Max consecutive failures ({self.max_consecutive_failures}) reached")
+
+    def _open_circuit(self, reason: str):
+        """Open the circuit breaker."""
+        self.circuit_open = True
+        self.circuit_opened_at = time.time()
+        print(f"\n  ⚠️  CIRCUIT BREAKER OPENED: {reason}")
+        print(f"      API calls will be blocked for {self.cooldown_seconds}s")
+        print(f"      Status: {self.get_status()}")
+
+    def reset(self):
+        """Reset the circuit breaker state."""
+        self.consecutive_failures = 0
+        self.circuit_open = False
+        self.circuit_opened_at = None
+        self.last_error = None
+        # Note: We don't reset total_cost_usd or total_api_calls
+        # Those persist for session-level tracking
+
+
+# Global circuit breaker instance
+_circuit_breaker = CircuitBreaker()
+
+
+def get_circuit_breaker() -> CircuitBreaker:
+    """Get the global circuit breaker instance."""
+    return _circuit_breaker
+
+
+def reset_circuit_breaker():
+    """Reset the global circuit breaker (for new sessions)."""
+    global _circuit_breaker
+    _circuit_breaker = CircuitBreaker()
+
+
+class CircuitBreakerOpen(Exception):
+    """Exception raised when circuit breaker is open."""
+    pass
 
 
 # ============================================
@@ -506,7 +626,17 @@ def save_discovered_keywords(keywords: list, topic_id: int):
 
 
 def batch_synthesize(posts: list, config: dict) -> dict | None:
-    """Send a batch of posts to Claude for analysis with retry logic."""
+    """Send a batch of posts to Claude for analysis with retry logic.
+
+    Uses circuit breaker to prevent runaway API costs.
+    """
+    cb = get_circuit_breaker()
+
+    # Check circuit breaker before making API call
+    if cb.is_open():
+        print("  Circuit breaker is OPEN - skipping API call")
+        return None
+
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         print("Error: ANTHROPIC_API_KEY environment variable not set")
@@ -517,6 +647,11 @@ def batch_synthesize(posts: list, config: dict) -> dict | None:
     prompt = SYNTHESIS_PROMPT.replace("{posts}", formatted_posts)
 
     for attempt in range(MAX_RETRIES):
+        # Re-check circuit breaker on each retry
+        if cb.is_open():
+            print("  Circuit breaker opened during retries - aborting")
+            return None
+
         try:
             response = client.messages.create(
                 model=config["anthropic"]["model"],
@@ -529,20 +664,32 @@ def batch_synthesize(posts: list, config: dict) -> dict | None:
             response_text = response.content[0].text
             result = parse_claude_response(response_text)
 
+            # Record success with token usage
+            usage = response.usage
+            cb.record_success(
+                input_tokens=usage.input_tokens if usage else 0,
+                output_tokens=usage.output_tokens if usage else 0
+            )
+
             if result is None:
                 print(f"  Parse failed, response preview: {response_text[:300]}...")
 
             return result
 
-        except Exception as e:
+        except (APIError, RateLimitError, APIConnectionError) as e:
+            cb.record_failure(e)
             delay = RETRY_DELAY * (2 ** attempt)
             print(f"  Claude API error (attempt {attempt + 1}/{MAX_RETRIES}): {e}")
-            if attempt < MAX_RETRIES - 1:
+            if attempt < MAX_RETRIES - 1 and not cb.is_open():
                 print(f"  Retrying in {delay}s...")
                 time.sleep(delay)
             else:
-                print("  Max retries reached, giving up.")
+                print("  Max retries reached or circuit open, giving up.")
                 return None
+        except Exception as e:
+            # Non-API errors - don't count against circuit breaker
+            print(f"  Unexpected error: {e}")
+            return None
 
     return None
 
@@ -552,9 +699,19 @@ def validate_themes(themes: list, config: dict) -> list:
     Second pass: Validate themes and assign confidence scores.
 
     Returns themes with confidence_score added, filtered to keep only valid ones.
+    Uses circuit breaker to prevent runaway API costs.
     """
     if not themes:
         return []
+
+    cb = get_circuit_breaker()
+
+    # Check circuit breaker - return defaults if open
+    if cb.is_open():
+        print("  Circuit breaker is OPEN - using default confidence")
+        for theme in themes:
+            theme["confidence_score"] = 0.6
+        return themes
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
@@ -581,6 +738,13 @@ def validate_themes(themes: list, config: dict) -> list:
 
         response_text = response.content[0].text
         result = parse_claude_response(response_text)
+
+        # Record success with token usage
+        usage = response.usage
+        cb.record_success(
+            input_tokens=usage.input_tokens if usage else 0,
+            output_tokens=usage.output_tokens if usage else 0
+        )
 
         if not result or "validated_themes" not in result:
             # Validation failed, return themes with default confidence
@@ -614,6 +778,12 @@ def validate_themes(themes: list, config: dict) -> list:
         print(f"  Validated {len(validated_themes)}/{len(themes)} themes")
         return validated_themes
 
+    except (APIError, RateLimitError, APIConnectionError) as e:
+        cb.record_failure(e)
+        print(f"  Validation API error: {e}, using default confidence")
+        for theme in themes:
+            theme["confidence_score"] = 0.6
+        return themes
     except Exception as e:
         print(f"  Validation error: {e}, using default confidence")
         for theme in themes:
@@ -660,7 +830,15 @@ def extract_pain_evidence(posts: list, config: dict) -> dict | None:
     Pass 1: Extract pain evidence from posts using the four-question framework.
 
     Returns dict with pain_evidence, failed_solutions_detected, and meta.
+    Uses circuit breaker to prevent runaway API costs.
     """
+    cb = get_circuit_breaker()
+
+    # Check circuit breaker before making API call
+    if cb.is_open():
+        print("  Circuit breaker is OPEN - skipping API call")
+        return None
+
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         print("Error: ANTHROPIC_API_KEY environment variable not set")
@@ -671,6 +849,11 @@ def extract_pain_evidence(posts: list, config: dict) -> dict | None:
     prompt = PAIN_EXTRACTION_PROMPT.replace("{posts}", formatted_posts)
 
     for attempt in range(MAX_RETRIES):
+        # Re-check circuit breaker on each retry
+        if cb.is_open():
+            print("  Circuit breaker opened during retries - aborting")
+            return None
+
         try:
             response = client.messages.create(
                 model=config["anthropic"]["model"],
@@ -683,20 +866,32 @@ def extract_pain_evidence(posts: list, config: dict) -> dict | None:
             response_text = response.content[0].text
             result = parse_claude_response(response_text)
 
+            # Record success with token usage
+            usage = response.usage
+            cb.record_success(
+                input_tokens=usage.input_tokens if usage else 0,
+                output_tokens=usage.output_tokens if usage else 0
+            )
+
             if result is None:
                 print(f"  Parse failed, response preview: {response_text[:300]}...")
 
             return result
 
-        except Exception as e:
+        except (APIError, RateLimitError, APIConnectionError) as e:
+            cb.record_failure(e)
             delay = RETRY_DELAY * (2 ** attempt)
             print(f"  Claude API error (attempt {attempt + 1}/{MAX_RETRIES}): {e}")
-            if attempt < MAX_RETRIES - 1:
+            if attempt < MAX_RETRIES - 1 and not cb.is_open():
                 print(f"  Retrying in {delay}s...")
                 time.sleep(delay)
             else:
-                print("  Max retries reached, giving up.")
+                print("  Max retries reached or circuit open, giving up.")
                 return None
+        except Exception as e:
+            # Non-API errors (parsing, etc.) - don't count against circuit breaker
+            print(f"  Unexpected error: {e}")
+            return None
 
     return None
 
@@ -706,9 +901,24 @@ def validate_and_cluster(evidence_list: list, config: dict) -> dict | None:
     Pass 2: Validate evidence and identify clusters.
 
     Only creates clusters when 3+ evidence entries share the same pain.
+    Uses circuit breaker to prevent runaway API costs.
     """
     if not evidence_list:
         return None
+
+    cb = get_circuit_breaker()
+
+    # Check circuit breaker - return defaults if open
+    if cb.is_open():
+        print("  Circuit breaker is OPEN - using default validation")
+        return {
+            "validated_evidence": [
+                {"evidence_index": i, "quality_score": 0.6, "keep": True}
+                for i in range(len(evidence_list))
+            ],
+            "pain_clusters": [],
+            "aggregated_failed_solutions": []
+        }
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
@@ -739,6 +949,13 @@ def validate_and_cluster(evidence_list: list, config: dict) -> dict | None:
         response_text = response.content[0].text
         result = parse_claude_response(response_text)
 
+        # Record success with token usage
+        usage = response.usage
+        cb.record_success(
+            input_tokens=usage.input_tokens if usage else 0,
+            output_tokens=usage.output_tokens if usage else 0
+        )
+
         if not result:
             print("  Validation parse failed, using defaults")
             return {
@@ -752,6 +969,10 @@ def validate_and_cluster(evidence_list: list, config: dict) -> dict | None:
 
         return result
 
+    except (APIError, RateLimitError, APIConnectionError) as e:
+        cb.record_failure(e)
+        print(f"  Validation API error: {e}")
+        return None
     except Exception as e:
         print(f"  Validation error: {e}")
         return None
