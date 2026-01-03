@@ -1071,6 +1071,213 @@ def evidence_to_csv(evidence_list: list) -> str:
     return output.getvalue()
 
 
+def render_pipeline_view():
+    """Render the pipeline architecture view."""
+    st.subheader("Pipeline Architecture")
+    st.caption("New event-driven pipeline for research processing")
+
+    # Import pipeline components
+    try:
+        from pipeline import Pipeline, PipelineContext, EventBus, PipelineEvent
+        from pipeline.context import ResearchConfig, ResearchPhase
+        from pipeline.stages import ScrapeStage, ValidationStage, SynthesisStage, ClusteringStage
+        from state import ResearchSession, ResearchSessionState
+        from plugins import PluginRegistry
+
+        pipeline_available = True
+    except ImportError as e:
+        st.error(f"Pipeline modules not available: {e}")
+        pipeline_available = False
+        return
+
+    # Session state for pipeline
+    if "pipeline_session" not in st.session_state:
+        st.session_state.pipeline_session = None
+    if "pipeline_events" not in st.session_state:
+        st.session_state.pipeline_events = []
+
+    # Pipeline status section
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        st.markdown("### Current Session")
+
+        session = st.session_state.pipeline_session
+
+        if session:
+            # Show session status
+            status_color = {
+                "planning": "blue",
+                "scraping": "orange",
+                "processing": "orange",
+                "reviewing": "yellow",
+                "completed": "green",
+                "failed": "red",
+                "cancelled": "gray"
+            }.get(session.state.value, "gray")
+
+            st.markdown(f"""
+            **Session ID:** `{session.session_id}`
+
+            **State:** :{status_color}[{session.state.value.upper()}]
+
+            **Topic:** {session.data.topic}
+
+            **Progress:**
+            - Posts collected: {session.data.posts_collected}
+            - Evidence extracted: {session.data.evidence_extracted}
+            - Themes synthesized: {session.data.themes_synthesized}
+            - Clusters identified: {session.data.clusters_identified}
+            """)
+
+            # Action buttons based on state
+            if session.state == ResearchSessionState.PLANNING:
+                if st.button("Start Research", type="primary"):
+                    st.info("Starting research pipeline...")
+                    # Would trigger async pipeline run
+                    st.session_state.pipeline_session.start()
+                    st.rerun()
+
+            elif session.state == ResearchSessionState.REVIEWING:
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    if st.button("Approve Results", type="primary"):
+                        session.approve()
+                        st.success("Session completed!")
+                        st.rerun()
+                with col_b:
+                    if st.button("Request More Data"):
+                        session.request_more_data()
+                        st.rerun()
+
+            elif session.is_active:
+                if st.button("Cancel", type="secondary"):
+                    session.cancel()
+                    st.warning("Session cancelled")
+                    st.rerun()
+
+        else:
+            st.info("No active session. Create a new session to start.")
+
+    with col2:
+        st.markdown("### New Session")
+
+        with st.form("new_session_form"):
+            topic = st.text_input("Topic", placeholder="e.g., CRM workflow automation")
+            keywords = st.text_area("Keywords (one per line)", height=100)
+            platforms = st.multiselect(
+                "Platforms",
+                ["reddit", "youtube", "hackernews", "g2_reviews", "google_autocomplete"],
+                default=["reddit"]
+            )
+
+            if st.form_submit_button("Create Session"):
+                if topic:
+                    session = ResearchSession()
+                    session.configure(
+                        topic=topic,
+                        keywords=[k.strip() for k in keywords.split("\n") if k.strip()],
+                        platforms=platforms
+                    )
+                    st.session_state.pipeline_session = session
+                    st.success(f"Created session {session.session_id}")
+                    st.rerun()
+                else:
+                    st.error("Topic is required")
+
+    st.divider()
+
+    # Pipeline stages visualization
+    st.markdown("### Pipeline Stages")
+
+    stage_cols = st.columns(4)
+
+    stages = [
+        ("Scrape", "Collect data from platforms", "scraping"),
+        ("Validate", "Extract pain evidence", "validating"),
+        ("Synthesize", "Generate themes", "synthesizing"),
+        ("Cluster", "Identify patterns", "clustering")
+    ]
+
+    session = st.session_state.pipeline_session
+    current_phase = session.state.value if session else "planning"
+
+    for i, (name, desc, phase) in enumerate(stages):
+        with stage_cols[i]:
+            # Determine stage status
+            if session:
+                if phase == current_phase or (current_phase in ["scraping"] and phase == "scraping"):
+                    status = "running"
+                elif session.state == ResearchSessionState.COMPLETED:
+                    status = "completed"
+                elif session.state == ResearchSessionState.FAILED:
+                    status = "failed"
+                else:
+                    status = "pending"
+            else:
+                status = "pending"
+
+            status_icon = {
+                "pending": "⏳",
+                "running": "🔄",
+                "completed": "✅",
+                "failed": "❌"
+            }.get(status, "⏳")
+
+            st.markdown(f"""
+            <div style="
+                border: 2px solid {'#4CAF50' if status == 'completed' else '#FF9800' if status == 'running' else '#9E9E9E'};
+                border-radius: 10px;
+                padding: 15px;
+                text-align: center;
+                background: {'#E8F5E9' if status == 'completed' else '#FFF3E0' if status == 'running' else '#FAFAFA'};
+            ">
+                <h4>{status_icon} {name}</h4>
+                <p style="font-size: 0.9em; color: #666;">{desc}</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+    st.divider()
+
+    # Plugin registry info
+    st.markdown("### Available Plugins")
+
+    try:
+        registry = PluginRegistry.get_instance()
+        registry.discover()
+
+        plugins = registry.get_all()
+
+        if plugins:
+            plugin_df_data = []
+            for p in plugins:
+                plugin_df_data.append({
+                    "Name": p.display_name,
+                    "Platform": p.platform,
+                    "Type": p.scraper_type.value,
+                    "Enabled": "✅" if p.enabled else "❌"
+                })
+
+            st.dataframe(plugin_df_data, use_container_width=True)
+        else:
+            st.info("No plugins discovered. Add scraper plugins to plugins/scrapers/")
+
+    except Exception as e:
+        st.warning(f"Could not load plugin registry: {e}")
+
+    # Event log
+    st.markdown("### Event Log")
+
+    if st.session_state.pipeline_events:
+        for event in reversed(st.session_state.pipeline_events[-20:]):
+            timestamp = event.get("timestamp", "")
+            event_type = event.get("event", "")
+            stage = event.get("stage", "")
+            st.text(f"[{timestamp}] {event_type}: {stage}")
+    else:
+        st.caption("No events yet. Start a session to see pipeline events.")
+
+
 def main():
     """Main dashboard entry point."""
     st.set_page_config(
@@ -1181,10 +1388,11 @@ def main():
     st.divider()
 
     # Main content area with tabbed views
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "Pain Evidence",
         "Pain Clusters",
         "Failed Solutions",
+        "Pipeline",
         "Legacy Themes"
     ])
 
@@ -1198,6 +1406,9 @@ def main():
         render_failed_solutions_view(topic_id)
 
     with tab4:
+        render_pipeline_view()
+
+    with tab5:
         # Legacy theme view
         st.subheader("Legacy Themes View")
         st.caption("This is the original theme extraction view. Use Pain Evidence for the new system.")
