@@ -978,9 +978,6 @@ def run_pain_intelligence_synthesis(topic_name: str = None, process_all: bool = 
         print("  Pass 1: Extracting pain evidence...")
         extraction_result = extract_pain_evidence(posts, config)
 
-        # Mark posts as processed regardless of result
-        mark_posts_processed(post_ids)
-
         if not extraction_result:
             print("  Failed to extract pain evidence")
             continue
@@ -1022,6 +1019,10 @@ def run_pain_intelligence_synthesis(topic_name: str = None, process_all: bool = 
         if failed_solutions:
             saved_solutions = save_extracted_failed_solutions(failed_solutions, topic_id)
             stats["failed_solutions_found"] += saved_solutions
+
+        # Mark posts as processed ONLY after all saves complete successfully
+        # This ensures failed batches can be retried
+        mark_posts_processed(post_ids)
 
         stats["batches_run"] += 1
 

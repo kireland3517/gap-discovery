@@ -31,8 +31,11 @@ DATABASE_PATH = Path(__file__).parent / "research.db"
 
 
 def get_connection() -> sqlite3.Connection:
-    """Get a database connection with row factory enabled."""
-    conn = sqlite3.connect(DATABASE_PATH)
+    """Get a database connection with row factory enabled.
+
+    Uses timeout=30 to wait for locks during concurrent access.
+    """
+    conn = sqlite3.connect(DATABASE_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -41,6 +44,10 @@ def init_database():
     """Create all tables if they don't exist."""
     conn = get_connection()
     cursor = conn.cursor()
+
+    # Enable WAL mode for better concurrent access
+    # WAL allows readers and writers to proceed concurrently
+    cursor.execute("PRAGMA journal_mode=WAL")
 
     # Topics table
     cursor.execute("""
@@ -573,13 +580,21 @@ def update_theme(theme_id: int, name: str, description: str):
 
 
 def delete_theme(theme_id: int):
-    """Delete a theme and its post associations."""
+    """Delete a theme and its post associations.
+
+    Both DELETEs are atomic - either both succeed or neither does.
+    """
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM theme_posts WHERE theme_id = ?", (theme_id,))
-    cursor.execute("DELETE FROM themes WHERE id = ?", (theme_id,))
-    conn.commit()
-    conn.close()
+    try:
+        cursor.execute("DELETE FROM theme_posts WHERE theme_id = ?", (theme_id,))
+        cursor.execute("DELETE FROM themes WHERE id = ?", (theme_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def reset_processed_posts(topic_id: int):
@@ -845,7 +860,10 @@ def add_pain_cluster(
 
 
 def link_evidence_to_cluster(cluster_id: int, evidence_id: int, relevance_score: float = 1.0):
-    """Link a pain evidence entry to a cluster."""
+    """Link a pain evidence entry to a cluster.
+
+    Uses explicit transaction handling to ensure INSERT and UPDATE are atomic.
+    """
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -855,7 +873,7 @@ def link_evidence_to_cluster(cluster_id: int, evidence_id: int, relevance_score:
             VALUES (?, ?, ?)
         """, (cluster_id, evidence_id, relevance_score))
 
-        # Update evidence count on cluster
+        # Update evidence count on cluster (atomic with INSERT)
         cursor.execute("""
             UPDATE pain_clusters
             SET evidence_count = (SELECT COUNT(*) FROM pain_cluster_evidence WHERE cluster_id = ?),
@@ -865,9 +883,12 @@ def link_evidence_to_cluster(cluster_id: int, evidence_id: int, relevance_score:
 
         conn.commit()
     except sqlite3.IntegrityError:
-        pass  # Link already exists
-
-    conn.close()
+        conn.rollback()  # Link already exists - rollback partial transaction
+    except Exception:
+        conn.rollback()  # Rollback on any error
+        raise
+    finally:
+        conn.close()
 
 
 def get_pain_clusters_for_topic(topic_id: int, min_evidence: int = 3, include_archived: bool = False) -> list:
@@ -953,47 +974,55 @@ def add_failed_solution(
     evidence_id: Optional[int] = None,
     cluster_id: Optional[int] = None
 ) -> int:
-    """Add a failed solution entry. Returns the solution ID."""
+    """Add a failed solution entry. Returns the solution ID.
+
+    Uses atomic upsert pattern - SELECT and UPDATE/INSERT in same transaction.
+    """
     conn = get_connection()
     cursor = conn.cursor()
 
-    # Check if this tool already exists for this topic
-    cursor.execute("""
-        SELECT id, reported_count, evidence_ids FROM failed_solutions
-        WHERE topic_id = ? AND tool_tried = ?
-    """, (topic_id, tool_tried))
-    existing = cursor.fetchone()
-
-    if existing:
-        # Update existing entry
-        solution_id = existing['id']
-        new_count = existing['reported_count'] + 1
-        existing_ids = json.loads(existing['evidence_ids'] or '[]')
-        if evidence_id and evidence_id not in existing_ids:
-            existing_ids.append(evidence_id)
-
+    try:
+        # Check if this tool already exists for this topic
         cursor.execute("""
-            UPDATE failed_solutions
-            SET reported_count = ?, evidence_ids = ?, why_failed = COALESCE(?, why_failed)
-            WHERE id = ?
-        """, (new_count, json.dumps(existing_ids), why_failed, solution_id))
-    else:
-        # Insert new entry
-        cursor.execute("""
-            INSERT INTO failed_solutions (
+            SELECT id, reported_count, evidence_ids FROM failed_solutions
+            WHERE topic_id = ? AND tool_tried = ?
+        """, (topic_id, tool_tried))
+        existing = cursor.fetchone()
+
+        if existing:
+            # Update existing entry
+            solution_id = existing['id']
+            new_count = existing['reported_count'] + 1
+            existing_ids = json.loads(existing['evidence_ids'] or '[]')
+            if evidence_id and evidence_id not in existing_ids:
+                existing_ids.append(evidence_id)
+
+            cursor.execute("""
+                UPDATE failed_solutions
+                SET reported_count = ?, evidence_ids = ?, why_failed = COALESCE(?, why_failed)
+                WHERE id = ?
+            """, (new_count, json.dumps(existing_ids), why_failed, solution_id))
+        else:
+            # Insert new entry
+            cursor.execute("""
+                INSERT INTO failed_solutions (
+                    topic_id, tool_tried, tool_category, why_failed, what_broke_first,
+                    human_behavior_involved, evidence_id, cluster_id, evidence_ids
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
                 topic_id, tool_tried, tool_category, why_failed, what_broke_first,
-                human_behavior_involved, evidence_id, cluster_id, evidence_ids
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            topic_id, tool_tried, tool_category, why_failed, what_broke_first,
-            human_behavior_involved, evidence_id, cluster_id,
-            json.dumps([evidence_id] if evidence_id else [])
-        ))
-        solution_id = cursor.lastrowid
+                human_behavior_involved, evidence_id, cluster_id,
+                json.dumps([evidence_id] if evidence_id else [])
+            ))
+            solution_id = cursor.lastrowid
 
-    conn.commit()
-    conn.close()
-    return solution_id
+        conn.commit()
+        return solution_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def get_failed_solutions_for_topic(topic_id: int, min_reports: int = 1) -> list:

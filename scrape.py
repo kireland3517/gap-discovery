@@ -15,9 +15,18 @@ from pathlib import Path
 from urllib.parse import quote_plus, urlencode
 
 import yaml
-from playwright.async_api import async_playwright, Page, Browser
+from playwright.async_api import async_playwright, Page, Browser, Error as PlaywrightError, TimeoutError as PlaywrightTimeout
 
 import database
+
+# Retryable exceptions - transient failures that may succeed on retry
+RETRYABLE_EXCEPTIONS = (
+    PlaywrightError,      # Playwright network/browser errors
+    PlaywrightTimeout,    # Page load timeouts
+    asyncio.TimeoutError, # Async timeouts
+    ConnectionError,      # Network connection issues
+    OSError,              # Low-level network errors (includes socket errors)
+)
 from complaint_detector import is_complaint
 
 # Retry configuration
@@ -66,6 +75,8 @@ async def with_retry(coro_func, *args, max_retries: int = MAX_RETRIES, **kwargs)
     """
     Execute async function with exponential backoff retry.
 
+    Only retries on transient network/browser errors (RETRYABLE_EXCEPTIONS).
+    Programming errors (TypeError, ValueError, etc.) are raised immediately.
     Delays: 2s, 4s, 8s for attempts 1, 2, 3
     Returns empty list on complete failure.
     """
@@ -73,7 +84,8 @@ async def with_retry(coro_func, *args, max_retries: int = MAX_RETRIES, **kwargs)
     for attempt in range(max_retries):
         try:
             return await coro_func(*args, **kwargs)
-        except Exception as e:
+        except RETRYABLE_EXCEPTIONS as e:
+            # Transient error - retry with backoff
             last_exception = e
             if attempt < max_retries - 1:
                 delay = BASE_DELAY * (2 ** attempt)
@@ -81,6 +93,7 @@ async def with_retry(coro_func, *args, max_retries: int = MAX_RETRIES, **kwargs)
                 await asyncio.sleep(delay)
             else:
                 print(f"      All {max_retries} attempts failed: {e}")
+        # Note: Other exceptions (TypeError, ValueError, etc.) propagate immediately
 
     return []  # Return empty list on failure
 

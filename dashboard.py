@@ -14,8 +14,11 @@ Legacy Features (still supported):
 import csv
 import io
 import json
+import os
+import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -52,8 +55,26 @@ INDUSTRY_OPTIONS = [
 
 EMOTION_OPTIONS = ["frustrated", "overwhelmed", "anxious", "resigned"]
 
-# Progress tracking file
-PROGRESS_FILE = Path(__file__).parent / ".job_progress.json"
+# Progress tracking database (separate from main DB to avoid blocking)
+PROGRESS_DB = Path(__file__).parent / ".job_progress.db"
+
+
+def _init_progress_db():
+    """Initialize the progress tracking database."""
+    conn = sqlite3.connect(PROGRESS_DB, timeout=30)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS job_progress (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            job_type TEXT,
+            status TEXT,
+            step TEXT,
+            percentage REAL DEFAULT 0,
+            timestamp TEXT,
+            error TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
 
 
 def load_config() -> dict:
@@ -64,7 +85,8 @@ def load_config() -> dict:
 
 
 def write_progress(job_type: str, status: str, step: str, percentage: float = 0, error: str = None):
-    """Write progress to file for cross-thread communication."""
+    """Write progress to database for cross-thread communication (thread-safe)."""
+    _init_progress_db()
     data = {
         "job_type": job_type,
         "status": status,
@@ -73,25 +95,47 @@ def write_progress(job_type: str, status: str, step: str, percentage: float = 0,
         "timestamp": datetime.now().isoformat(),
         "error": error
     }
-    with open(PROGRESS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f)
+    try:
+        conn = sqlite3.connect(PROGRESS_DB, timeout=30)
+        conn.execute("DELETE FROM job_progress")
+        conn.execute("""
+            INSERT INTO job_progress (id, job_type, status, step, percentage, timestamp, error)
+            VALUES (1, ?, ?, ?, ?, ?, ?)
+        """, (data["job_type"], data["status"], data["step"],
+              data["percentage"], data["timestamp"], data["error"]))
+        conn.commit()
+        conn.close()
+    except sqlite3.Error as e:
+        print(f"Progress write error: {e}")
 
 
 def read_progress() -> dict | None:
-    """Read progress from file. Returns None if no progress file."""
-    if not PROGRESS_FILE.exists():
+    """Read progress from database. Returns None if no progress."""
+    if not PROGRESS_DB.exists():
         return None
     try:
-        with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, FileNotFoundError):
+        conn = sqlite3.connect(PROGRESS_DB, timeout=30)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute("SELECT * FROM job_progress WHERE id = 1")
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return dict(row)
+        return None
+    except sqlite3.Error:
         return None
 
 
 def clear_progress():
-    """Remove progress file."""
-    if PROGRESS_FILE.exists():
-        PROGRESS_FILE.unlink()
+    """Clear progress from database."""
+    if PROGRESS_DB.exists():
+        try:
+            conn = sqlite3.connect(PROGRESS_DB, timeout=30)
+            conn.execute("DELETE FROM job_progress")
+            conn.commit()
+            conn.close()
+        except sqlite3.Error:
+            pass
 
 
 def run_scraper_background(topic_name: str, platforms: list):
