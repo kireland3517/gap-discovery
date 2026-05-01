@@ -1,6 +1,5 @@
 # Environment and secrets
 .env
-config.yaml
 
 # Database
 research.db

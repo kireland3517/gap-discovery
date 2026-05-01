@@ -1,0 +1,85 @@
+# Research Pattern Discovery System Configuration
+# API key should be provided via environment variable: ANTHROPIC_API_KEY
+
+anthropic:
+  model: "claude-sonnet-4-20250514"
+
+scraping:
+  delay_min: 3
+  delay_max: 5
+  max_retries: 3
+  timeout: 30
+  user_agents:
+    - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    - "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"
+    - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15"
+
+topics:
+  - name: "Peer Recovery Resource Library Gaps"
+    max_posts_per_keyword: 40
+    keywords:
+      - "peer recovery resources"
+      - "peer support specialist resources"
+      - "peer coach resources"
+      - "recovery facilitator resources"
+      - "peer recovery curriculum"
+      - "peer support group facilitation guide"
+      - "peer support worksheets"
+      - "recovery workbook for clients"
+      - "peer specialist session templates"
+      - "group facilitation templates"
+      - "recovery planning template"
+      - "digital recovery worksheets"
+      - "evidence based peer support materials"
+      - "SUD peer support training materials"
+      - "what tools do peer recovery coaches use"
+      - "peer recovery documentation templates"
+      - "recovery meeting activities"
+      - "relapse prevention worksheet peer support"
+      - "motivational interviewing peer support worksheets"
+      - "where to find peer support resources"
+
+  - name: "Peer Recovery Resource Buying Signals"
+    max_posts_per_keyword: 35
+    keywords:
+      - "looking for peer recovery templates"
+      - "need recovery coaching worksheets"
+      - "best peer support curriculum"
+      - "peer specialist printable resources"
+      - "facilitator guide for recovery groups"
+      - "recovery group materials free vs paid"
+      - "done-for-you peer support resources"
+      - "peer support toolkit recommendations"
+      - "recovery coach handouts"
+      - "recovery journal prompts for clients"
+      - "peer support certification prep materials"
+      - "how to structure peer recovery sessions"
+
+discovery:
+  promotion_threshold: 3
+  max_discovered_per_topic: 15
+
+synthesis:
+  min_posts_per_theme: 5
+  batch_size: 50
+  intensity_keywords:
+    high:
+      - "frustrated"
+      - "hate"
+      - "gave up"
+      - "impossible"
+      - "nightmare"
+      - "can't find"
+      - "wasting time"
+    medium:
+      - "annoying"
+      - "confusing"
+      - "struggling"
+      - "stuck"
+      - "need help"
+    low:
+      - "wondering"
+      - "unsure"
+      - "considering"
+      - "looking for"
