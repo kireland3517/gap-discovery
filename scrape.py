@@ -11,6 +11,8 @@ import asyncio
 import json
 import random
 import re
+import subprocess
+import sys
 from pathlib import Path
 from urllib.parse import quote_plus, urlencode
 
@@ -48,6 +50,41 @@ PAIN_SCRAPERS = [
     "linkedin_jobs",
     "indeed_jobs"
 ]
+
+
+async def launch_chromium_with_fallback(playwright_instance):
+    """Launch Chromium with cloud-safe flags and install fallback."""
+    launch_kwargs = {
+        "headless": True,
+        "args": [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+        ],
+    }
+
+    try:
+        return await playwright_instance.chromium.launch(**launch_kwargs)
+    except PlaywrightError as exc:
+        error_text = str(exc)
+        needs_install = (
+            "Executable doesn't exist" in error_text
+            or "browserType.launch: Executable" in error_text
+        )
+
+        if not needs_install:
+            raise
+
+        print("Chromium executable not found. Installing Playwright browser runtime...")
+        subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        # Retry launch after install attempt.
+        return await playwright_instance.chromium.launch(**launch_kwargs)
 
 
 def load_config() -> dict:
@@ -1206,7 +1243,7 @@ async def run_pain_scrapers_async(scrapers: list = None) -> dict:
     pain_config = config.get("pain_intelligence", {})
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        browser = await launch_chromium_with_fallback(p)
         context = None
         page = None
 
@@ -1572,7 +1609,7 @@ async def run_scraper_async(topic_name: str = None, platforms: list = None) -> d
     }
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        browser = await launch_chromium_with_fallback(p)
 
         try:
             for topic in topics_to_scrape:
