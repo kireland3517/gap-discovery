@@ -1267,7 +1267,7 @@ async def scrape_indeed_jobs(page: Page, config: dict) -> list:
 # PAIN INTELLIGENCE SCRAPER ORCHESTRATION
 # =============================================================================
 
-async def run_pain_scrapers_async(scrapers: list = None) -> dict:
+async def run_pain_scrapers_async(scrapers: list = None, topic_name: str = None) -> dict:
     """
     Run Pain Intelligence scrapers.
 
@@ -1276,6 +1276,7 @@ async def run_pain_scrapers_async(scrapers: list = None) -> dict:
 
     Args:
         scrapers: List of scraper names to run (None = all enabled)
+        topic_name: Optional topic name for associating saved records
     """
     config = load_config()
     database.init_database()
@@ -1293,6 +1294,15 @@ async def run_pain_scrapers_async(scrapers: list = None) -> dict:
     }
 
     pain_config = config.get("pain_intelligence", {})
+    configured_topics = config.get("topics", [])
+
+    resolved_topic_name = topic_name
+    if not resolved_topic_name and configured_topics:
+        resolved_topic_name = configured_topics[0].get("name")
+    if not resolved_topic_name:
+        resolved_topic_name = "Default Topic"
+
+    topic_id = database.get_or_create_topic(resolved_topic_name)
 
     async with async_playwright() as p:
         browser = await launch_chromium_with_fallback(p)
@@ -1302,7 +1312,13 @@ async def run_pain_scrapers_async(scrapers: list = None) -> dict:
         try:
             # Get tools to scrape from config
             tools = pain_config.get("tool_reviews", {}).get("tools", [])
-            tool_names = [t["name"] for t in tools]
+            tool_names = [t["name"] for t in tools if t.get("name")]
+            if not tool_names:
+                # Fallback to topic keywords so search scrapers still run without tool catalog config.
+                for topic in configured_topics:
+                    if topic.get("name") == resolved_topic_name:
+                        tool_names = topic.get("keywords", [])[:10]
+                        break
 
             # Create browser context
             context = await browser.new_context(
@@ -1320,11 +1336,11 @@ async def run_pain_scrapers_async(scrapers: list = None) -> dict:
                         suggestions = await with_retry(scrape_google_autocomplete, page, tool_name, config)
                         for s in suggestions:
                             database.add_search_signal(
+                                topic_id=topic_id,
                                 signal_type="autocomplete",
-                                query=s["query"],
-                                result_text=s["suggestion"],
+                                query_text=s["suggestion"],
+                                seed_query=s["query"],
                                 position=s.get("position"),
-                                tool=s.get("tool"),
                                 source_url="google.com"
                             )
                             stats["autocomplete_suggestions"] += 1
@@ -1342,10 +1358,10 @@ async def run_pain_scrapers_async(scrapers: list = None) -> dict:
                         questions = await with_retry(scrape_google_paa, page, tool_name, config)
                         for q in questions:
                             database.add_search_signal(
+                                topic_id=topic_id,
                                 signal_type="paa",
-                                query=q["query"],
-                                result_text=q["question"],
-                                tool=q.get("tool"),
+                                query_text=q["question"],
+                                seed_query=q["query"],
                                 source_url="google.com"
                             )
                             stats["paa_questions"] += 1
@@ -1364,12 +1380,13 @@ async def run_pain_scrapers_async(scrapers: list = None) -> dict:
                             reviews = await with_retry(scrape_g2_reviews, page, tool_config_item, config)
                             for r in reviews:
                                 database.add_tool_review(
-                                    tool=r["tool"],
+                                    topic_id=topic_id,
+                                    tool_name=r["tool"],
                                     platform=r["platform"],
+                                    url=r["source_url"],
                                     star_rating=r["star_rating"],
                                     reviewer_role=r.get("reviewer_role"),
                                     cons_text=r["cons_text"],
-                                    source_url=r["source_url"]
                                 )
                                 stats["reviews_collected"] += 1
                             print(f"    Saved {len(reviews)} reviews")
@@ -1387,13 +1404,14 @@ async def run_pain_scrapers_async(scrapers: list = None) -> dict:
                             reviews = await with_retry(scrape_capterra_reviews, page, tool_config_item, config)
                             for r in reviews:
                                 database.add_tool_review(
-                                    tool=r["tool"],
+                                    topic_id=topic_id,
+                                    tool_name=r["tool"],
                                     platform=r["platform"],
+                                    url=r["source_url"],
                                     star_rating=r["star_rating"],
                                     reviewer_role=r.get("reviewer_role"),
-                                    reviewer_industry=r.get("reviewer_industry"),
+                                    industry=r.get("reviewer_industry"),
                                     cons_text=r["cons_text"],
-                                    source_url=r["source_url"]
                                 )
                                 stats["reviews_collected"] += 1
                             print(f"    Saved {len(reviews)} reviews")
@@ -1409,7 +1427,7 @@ async def run_pain_scrapers_async(scrapers: list = None) -> dict:
                     for post in posts:
                         # Add to posts table with source marking
                         database.add_post(
-                            topic_id=1,  # Will be linked to topic later
+                            topic_id=topic_id,
                             keyword_id=None,
                             source=post["source"],
                             url=post["url"],
@@ -1429,7 +1447,7 @@ async def run_pain_scrapers_async(scrapers: list = None) -> dict:
                     posts = await with_retry(scrape_make_community, page, config)
                     for post in posts:
                         database.add_post(
-                            topic_id=1,
+                            topic_id=topic_id,
                             keyword_id=None,
                             source=post["source"],
                             url=post["url"],
@@ -1449,7 +1467,7 @@ async def run_pain_scrapers_async(scrapers: list = None) -> dict:
                     posts = await with_retry(scrape_hubspot_community, page, config)
                     for post in posts:
                         database.add_post(
-                            topic_id=1,
+                            topic_id=topic_id,
                             keyword_id=None,
                             source=post["source"],
                             url=post["url"],
@@ -1469,13 +1487,20 @@ async def run_pain_scrapers_async(scrapers: list = None) -> dict:
                 try:
                     jobs = await with_retry(scrape_linkedin_jobs, page, config)
                     for job in jobs:
+                        detected_signals = job.get("detected_signals")
+                        if isinstance(detected_signals, str):
+                            try:
+                                detected_signals = json.loads(detected_signals)
+                            except json.JSONDecodeError:
+                                detected_signals = []
                         database.add_job_signal(
+                            topic_id=topic_id,
                             platform=job["platform"],
                             job_title=job["job_title"],
+                            url=job["source_url"],
                             company=job.get("company"),
-                            description_snippet=job["description_snippet"],
-                            detected_signals=job["detected_signals"],
-                            source_url=job["source_url"]
+                            description=job["description_snippet"],
+                            manual_tasks_detected=detected_signals or []
                         )
                         stats["job_signals"] += 1
                     print(f"  Saved {len(jobs)} job signals")
@@ -1488,13 +1513,20 @@ async def run_pain_scrapers_async(scrapers: list = None) -> dict:
                 try:
                     jobs = await with_retry(scrape_indeed_jobs, page, config)
                     for job in jobs:
+                        detected_signals = job.get("detected_signals")
+                        if isinstance(detected_signals, str):
+                            try:
+                                detected_signals = json.loads(detected_signals)
+                            except json.JSONDecodeError:
+                                detected_signals = []
                         database.add_job_signal(
+                            topic_id=topic_id,
                             platform=job["platform"],
                             job_title=job["job_title"],
+                            url=job["source_url"],
                             company=job.get("company"),
-                            description_snippet=job["description_snippet"],
-                            detected_signals=job["detected_signals"],
-                            source_url=job["source_url"]
+                            description=job["description_snippet"],
+                            manual_tasks_detected=detected_signals or []
                         )
                         stats["job_signals"] += 1
                     print(f"  Saved {len(jobs)} job signals")
@@ -1522,9 +1554,9 @@ async def run_pain_scrapers_async(scrapers: list = None) -> dict:
     return stats
 
 
-def run_pain_scrapers(scrapers: list = None) -> dict:
+def run_pain_scrapers(scrapers: list = None, topic_name: str = None) -> dict:
     """Sync wrapper for run_pain_scrapers_async."""
-    return asyncio.run(run_pain_scrapers_async(scrapers))
+    return asyncio.run(run_pain_scrapers_async(scrapers, topic_name))
 
 
 async def scrape_keyword_async(
@@ -1535,7 +1567,8 @@ async def scrape_keyword_async(
     topic_keywords: list,
     max_posts: int,
     platforms: list,
-    config: dict
+    config: dict,
+    save_unfiltered: bool = False
 ) -> dict:
     """
     Scrape all platforms for a single keyword concurrently.
@@ -1543,14 +1576,32 @@ async def scrape_keyword_async(
     Creates separate browser contexts for each platform to enable parallel scraping.
     Returns stats dict with posts_found, posts_saved, duplicates_skipped.
     """
-    stats = {"posts_found": 0, "posts_saved": 0, "duplicates_skipped": 0, "filtered": 0}
+    stats = {
+        "posts_found": 0,
+        "posts_saved": 0,
+        "duplicates_skipped": 0,
+        "filtered": 0,
+        "unfiltered_saved": 0
+    }
 
     def save_if_complaint(post, keyword, topic_keywords):
         """Save post only if content is a complaint (not casual mention)."""
         content = f"{post['title']} {post['content']}"
         is_comp, complaint_score = is_complaint(content, keyword, topic_keywords)
         if not is_comp:
-            return "skipped"
+            if not save_unfiltered:
+                return "skipped"
+            post_id = database.add_post(
+                topic_id=topic_id,
+                keyword_id=keyword_id,
+                source=post["source"],
+                url=post["url"],
+                title=post["title"],
+                content=post["content"],
+                author=post["author"],
+                complaint_score=complaint_score
+            )
+            return "saved_unfiltered" if post_id else "duplicate"
         post_id = database.add_post(
             topic_id=topic_id,
             keyword_id=keyword_id,
@@ -1617,7 +1668,11 @@ async def scrape_keyword_async(
     return stats
 
 
-async def run_scraper_async(topic_name: str = None, platforms: list = None) -> dict:
+async def run_scraper_async(
+    topic_name: str = None,
+    platforms: list = None,
+    save_unfiltered: bool = False
+) -> dict:
     """
     Async scraper entry point.
 
@@ -1628,6 +1683,7 @@ async def run_scraper_async(topic_name: str = None, platforms: list = None) -> d
     Args:
         topic_name: Name of topic to scrape (None = all topics)
         platforms: List of platforms to scrape (None = all platforms)
+        save_unfiltered: Save posts even if complaint filter rejects them
     """
     config = load_config()
     database.init_database()
@@ -1656,9 +1712,40 @@ async def run_scraper_async(topic_name: str = None, platforms: list = None) -> d
         "keywords_processed": 0,
         "posts_found": 0,
         "posts_saved": 0,
+        "unfiltered_saved": 0,
         "duplicates_skipped": 0,
         "platforms_used": platforms
     }
+
+    def save_if_complaint_for_topic(post: dict, keyword: str, topic_keywords: list, topic_id: int, keyword_id: int) -> str:
+        content = f"{post['title']} {post['content']}"
+        is_comp, complaint_score = is_complaint(content, keyword, topic_keywords)
+        if not is_comp:
+            if not save_unfiltered:
+                return "skipped"
+            post_id = database.add_post(
+                topic_id=topic_id,
+                keyword_id=keyword_id,
+                source=post["source"],
+                url=post["url"],
+                title=post["title"],
+                content=post["content"],
+                author=post["author"],
+                complaint_score=complaint_score
+            )
+            return "saved_unfiltered" if post_id else "duplicate"
+        post_id = database.add_post(
+            topic_id=topic_id,
+            keyword_id=keyword_id,
+            source=post["source"],
+            url=post["url"],
+            title=post["title"],
+            content=post["content"],
+            author=post["author"],
+            complaint_score=complaint_score
+        )
+        return "saved" if post_id else "duplicate"
+
 
     async def run_reddit_fallback_only() -> dict:
         """Fallback mode for environments where Playwright can't launch."""
@@ -1676,9 +1763,13 @@ async def run_scraper_async(topic_name: str = None, platforms: list = None) -> d
 
                 saved, filtered = 0, 0
                 for post in posts:
-                    result_type = save_if_complaint(post, keyword, topic_keywords)
+                    result_type = save_if_complaint_for_topic(post, keyword, topic_keywords, topic_id, keyword_id)
                     if result_type == "saved":
                         stats["posts_saved"] += 1
+                        saved += 1
+                    elif result_type == "saved_unfiltered":
+                        stats["posts_saved"] += 1
+                        stats["unfiltered_saved"] += 1
                         saved += 1
                     elif result_type == "duplicate":
                         stats["duplicates_skipped"] += 1
@@ -1712,11 +1803,12 @@ async def run_scraper_async(topic_name: str = None, platforms: list = None) -> d
                         # Scrape all platforms concurrently for this keyword
                         keyword_stats = await scrape_keyword_async(
                             browser, keyword, topic_id, keyword_id,
-                            topic_keywords, max_posts, platforms, config
+                            topic_keywords, max_posts, platforms, config, save_unfiltered=save_unfiltered
                         )
 
                         stats["posts_found"] += keyword_stats["posts_found"]
                         stats["posts_saved"] += keyword_stats["posts_saved"]
+                        stats["unfiltered_saved"] += keyword_stats.get("unfiltered_saved", 0)
                         stats["duplicates_skipped"] += keyword_stats["duplicates_skipped"]
                         stats["keywords_processed"] += 1
 
@@ -1737,18 +1829,20 @@ async def run_scraper_async(topic_name: str = None, platforms: list = None) -> d
     print(f"  Keywords processed: {stats['keywords_processed']}")
     print(f"  Posts found: {stats['posts_found']}")
     print(f"  Posts saved: {stats['posts_saved']}")
+    if save_unfiltered:
+        print(f"  Unfiltered saved: {stats['unfiltered_saved']}")
     print(f"  Duplicates skipped: {stats['duplicates_skipped']}")
 
     return stats
 
 
-def run_scraper(topic_name: str = None, platforms: list = None) -> dict:
+def run_scraper(topic_name: str = None, platforms: list = None, save_unfiltered: bool = False) -> dict:
     """
     Sync wrapper for run_scraper_async.
 
     Main scraper entry point for CLI and external callers.
     """
-    return asyncio.run(run_scraper_async(topic_name, platforms))
+    return asyncio.run(run_scraper_async(topic_name, platforms, save_unfiltered=save_unfiltered))
 
 
 if __name__ == "__main__":
@@ -1767,6 +1861,11 @@ if __name__ == "__main__":
         type=str,
         help="Comma-separated pain scrapers: google_autocomplete,google_paa,g2_reviews,capterra_reviews,zapier_community,make_community,hubspot_community,linkedin_jobs,indeed_jobs"
     )
+    parser.add_argument(
+        "--save-unfiltered",
+        action="store_true",
+        help="Standard mode only: save posts even when complaint filter rejects them"
+    )
     args = parser.parse_args()
 
     if args.mode == "pain":
@@ -1774,10 +1873,10 @@ if __name__ == "__main__":
         scrapers = None
         if args.pain_scrapers:
             scrapers = [s.strip() for s in args.pain_scrapers.split(",")]
-        run_pain_scrapers(scrapers)
+        run_pain_scrapers(scrapers, args.topic)
     else:
         # Run standard platform scrapers
         platforms = None
         if args.platforms:
             platforms = [p.strip() for p in args.platforms.split(",")]
-        run_scraper(args.topic, platforms)
+        run_scraper(args.topic, platforms, save_unfiltered=args.save_unfiltered)

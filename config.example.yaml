@@ -54,3 +54,45 @@ synthesis:
       - "wondering"
       - "unsure"
       - "considering"
+
+# Pain intelligence scraper settings (used with: python scrape.py --mode pain ...)
+pain_intelligence:
+  google_autocomplete:
+    enabled: true
+    max_suggestions_per_query: 8
+    seed_queries:
+      - "why does {tool} not"
+      - "{tool} problems"
+      - "{tool} alternatives"
+      - "{tool} frustrating"
+  google_paa:
+    enabled: true
+    expand_count: 2
+  tool_reviews:
+    max_stars: 3
+    tools: []
+  communities:
+    zapier:
+      enabled: false
+      urls:
+        - "https://community.zapier.com/c/troubleshooting/5"
+    make:
+      enabled: false
+      urls:
+        - "https://www.make.com/en/community"
+    hubspot:
+      enabled: false
+      urls:
+        - "https://community.hubspot.com/t5/CRM/ct-p/crm"
+  job_scrapers:
+    enabled: false
+    platforms:
+      - "linkedin"
+      - "indeed"
+    job_titles: []
+    max_jobs_per_title: 15
+    manual_task_signals:
+      - "manual"
+      - "spreadsheet"
+      - "copy and paste"
+      - "data entry"

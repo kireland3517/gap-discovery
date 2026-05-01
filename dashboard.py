@@ -203,15 +203,29 @@ def clear_progress():
             pass
 
 
-def run_scraper_background(topic_name: str, platforms: list):
+def run_scraper_background(
+    topic_name: str,
+    mode: str = "standard",
+    platforms: list | None = None,
+    pain_scrapers: list | None = None,
+    save_unfiltered: bool = False
+):
     """Run scraper in background thread with progress updates."""
     try:
-        write_progress("scrape", "running", f"Starting scrape for {topic_name}", 0)
+        write_progress("scrape", "running", f"Starting {mode} scrape for {topic_name}", 0)
 
         # Run scraper as subprocess
-        platforms_arg = ",".join(platforms)
+        cmd = [sys.executable, "scrape.py", "--topic", topic_name, "--mode", mode]
+        if mode == "pain":
+            if pain_scrapers:
+                cmd.extend(["--pain-scrapers", ",".join(pain_scrapers)])
+        elif platforms:
+            cmd.extend(["--platforms", ",".join(platforms)])
+            if save_unfiltered:
+                cmd.append("--save-unfiltered")
+
         result = subprocess.run(
-            [sys.executable, "scrape.py", "--topic", topic_name, "--platforms", platforms_arg],
+            cmd,
             capture_output=True,
             text=True,
             cwd=str(Path(__file__).parent),
@@ -1379,8 +1393,8 @@ def main():
         time.sleep(2)
         st.rerun()
 
-    # Top bar: Topic selector, Platform selector, and buttons
-    col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
+    # Top bar: Topic selector, scraper controls, and buttons
+    col1, col2, col3, col4 = st.columns([2, 3, 1, 1])
 
     with col1:
         if topic_names:
@@ -1394,46 +1408,88 @@ def main():
             selected_topic = None
 
     with col2:
-        # Platform selector
-        available_platforms = ["Reddit", "YouTube", "Hacker News", "Quora"]
-        selected_platforms = st.multiselect(
-            "Platforms to Scrape",
-            available_platforms,
-            default=["Reddit"],
-            key="platform_selector"
+        scrape_mode = st.selectbox(
+            "Scrape Mode",
+            ["standard", "pain"],
+            index=0,
+            help="Standard scrapes Reddit/YouTube/Hacker News/Quora. Pain mode scrapes search, reviews, communities, and jobs."
         )
-        # Convert display names to internal names
-        platform_map = {
-            "Reddit": "reddit",
-            "YouTube": "youtube",
-            "Hacker News": "hackernews",
-            "Quora": "quora"
-        }
-        platforms_to_scrape = [platform_map[p] for p in selected_platforms]
+
+        platforms_to_scrape = []
+        pain_scrapers_to_run = []
+        save_unfiltered_standard = False
+
+        if scrape_mode == "standard":
+            available_platforms = ["Reddit", "YouTube", "Hacker News", "Quora"]
+            selected_platforms = st.multiselect(
+                "Platforms to Scrape",
+                available_platforms,
+                default=["Reddit"],
+                key="platform_selector"
+            )
+            platform_map = {
+                "Reddit": "reddit",
+                "YouTube": "youtube",
+                "Hacker News": "hackernews",
+                "Quora": "quora"
+            }
+            platforms_to_scrape = [platform_map[p] for p in selected_platforms]
+            save_unfiltered_standard = st.checkbox(
+                "Debug: Save unfiltered posts",
+                value=False,
+                help="Store posts even if complaint detection rejects them."
+            )
+        else:
+            pain_options = [
+                "google_autocomplete",
+                "google_paa",
+                "g2_reviews",
+                "capterra_reviews",
+                "zapier_community",
+                "make_community",
+                "hubspot_community",
+                "linkedin_jobs",
+                "indeed_jobs",
+            ]
+            pain_scrapers_to_run = st.multiselect(
+                "Pain Scrapers to Run",
+                pain_options,
+                default=["google_autocomplete", "google_paa"],
+                key="pain_scraper_selector"
+            )
 
     with col3:
         # Disable buttons while job is running
         scrape_disabled = job_running
         if selected_topic and st.button("Scrape", type="primary", disabled=scrape_disabled):
-            if not platforms_to_scrape:
-                st.error("Select at least one platform!")
+            if scrape_mode == "standard" and not platforms_to_scrape:
+                st.error("Select at least one standard platform.")
+            elif scrape_mode == "pain" and not pain_scrapers_to_run:
+                st.error("Select at least one pain scraper.")
             else:
                 # Start background scraping job
                 start_background_job(
                     "scrape",
                     run_scraper_background,
-                    (selected_topic, platforms_to_scrape)
+                    (
+                        selected_topic,
+                        scrape_mode,
+                        platforms_to_scrape,
+                        pain_scrapers_to_run,
+                        save_unfiltered_standard
+                    )
                 )
                 st.rerun()
 
     with col4:
         synth_disabled = job_running
         if selected_topic and st.button("Synthesize", disabled=synth_disabled):
+            synthesis_mode = "pain" if scrape_mode == "pain" else "legacy"
             # Start background synthesis job with pain intelligence mode
             start_background_job(
                 "synthesize",
                 run_synthesis_background,
-                (selected_topic, "pain")
+                (selected_topic, synthesis_mode)
             )
             st.rerun()
 
