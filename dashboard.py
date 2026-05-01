@@ -78,10 +78,39 @@ def _init_progress_db():
 
 
 def load_config() -> dict:
-    """Load configuration from config.yaml."""
-    config_path = Path(__file__).parent / "config.yaml"
-    with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    """Load configuration from local file or Streamlit Cloud secrets."""
+    base_dir = Path(__file__).parent
+
+    # 1) Prefer local config file (typical local/dev usage)
+    config_path = base_dir / "config.yaml"
+    if config_path.exists():
+        with open(config_path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+
+    # 2) Streamlit Cloud: allow full YAML blob via st.secrets["config_yaml"]
+    config_yaml_secret = st.secrets.get("config_yaml")
+    if config_yaml_secret:
+        return yaml.safe_load(config_yaml_secret) or {}
+
+    # 3) Streamlit Cloud: allow structured config directly in secrets
+    secret_sections = ["anthropic", "scraping", "topics", "discovery", "synthesis"]
+    has_structured_secret = any(section in st.secrets for section in secret_sections)
+    if has_structured_secret:
+        return {
+            "anthropic": dict(st.secrets.get("anthropic", {})),
+            "scraping": dict(st.secrets.get("scraping", {})),
+            "topics": list(st.secrets.get("topics", [])),
+            "discovery": dict(st.secrets.get("discovery", {})),
+            "synthesis": dict(st.secrets.get("synthesis", {})),
+        }
+
+    # 4) Last resort: example config so app can still boot in read-only mode
+    example_path = base_dir / "config.example.yaml"
+    if example_path.exists():
+        with open(example_path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+
+    return {"topics": []}
 
 
 def write_progress(job_type: str, status: str, step: str, percentage: float = 0, error: str = None):
@@ -1319,7 +1348,7 @@ def main():
                 key="topic_selector"
             )
         else:
-            st.warning("No topics defined in config.yaml")
+            st.warning("No topics defined. Add topics in config.yaml or Streamlit secrets.")
             selected_topic = None
 
     with col2:
