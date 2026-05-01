@@ -21,6 +21,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 
@@ -115,6 +116,15 @@ def load_config() -> dict:
 
 def configure_runtime_from_secrets(config: dict):
     """Configure runtime for Streamlit Cloud subprocess jobs."""
+
+    def _to_plain_data(value):
+        """Convert Streamlit secrets proxy objects to plain Python data."""
+        if isinstance(value, Mapping):
+            return {str(k): _to_plain_data(v) for k, v in value.items()}
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            return [_to_plain_data(v) for v in value]
+        return value
+
     base_dir = Path(__file__).parent
 
     # Allow synthesis subprocesses to authenticate without local env setup.
@@ -122,7 +132,7 @@ def configure_runtime_from_secrets(config: dict):
         api_key = st.secrets.get("ANTHROPIC_API_KEY")
         if not api_key:
             anthropic_section = st.secrets.get("anthropic", {})
-            if isinstance(anthropic_section, dict):
+            if hasattr(anthropic_section, "get"):
                 api_key = anthropic_section.get("api_key")
         if api_key:
             os.environ["ANTHROPIC_API_KEY"] = str(api_key)
@@ -132,9 +142,10 @@ def configure_runtime_from_secrets(config: dict):
     config_path = base_dir / "config.yaml"
     if not config_path.exists() and config:
         try:
+            plain_config = _to_plain_data(config)
             with open(config_path, "w", encoding="utf-8") as f:
-                yaml.safe_dump(config, f, sort_keys=False)
-        except OSError as exc:
+                yaml.safe_dump(plain_config, f, sort_keys=False)
+        except Exception as exc:
             st.warning(f"Could not write runtime config.yaml: {exc}")
 
 
