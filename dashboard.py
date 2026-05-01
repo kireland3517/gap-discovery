@@ -252,7 +252,7 @@ def run_scraper_background(
                 error_text = (
                     "Playwright Chromium could not start because a required system library "
                     "is missing on the host (libglib-2.0.so.0). "
-                    "If running on Streamlit Cloud, add apt package 'libglib2.0-0' in packages.txt "
+                    "If running on Streamlit Cloud, add apt package 'libglib2.0-0t64' in packages.txt "
                     "and redeploy. You can still run standard Reddit scraping with '--platforms reddit' "
                     "locally while cloud image is being rebuilt.\n\n"
                     f"{error_text}"
