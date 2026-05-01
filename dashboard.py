@@ -221,7 +221,12 @@ def run_scraper_background(topic_name: str, platforms: list):
         if result.returncode == 0:
             write_progress("scrape", "completed", "Scraping complete!", 100)
         else:
-            write_progress("scrape", "failed", "Scrape failed", 0, error=result.stderr[:500])
+            stderr_tail = (result.stderr or "")[-2500:]
+            stdout_tail = (result.stdout or "")[-1500:]
+            error_text = stderr_tail.strip() or stdout_tail.strip() or "Unknown scraper error"
+            if stdout_tail.strip() and stderr_tail.strip():
+                error_text = f"{stderr_tail}\n\n[stdout tail]\n{stdout_tail}"
+            write_progress("scrape", "failed", "Scrape failed", 0, error=error_text)
 
     except Exception as e:
         write_progress("scrape", "failed", "Scrape error", 0, error=str(e))
