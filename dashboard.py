@@ -113,6 +113,31 @@ def load_config() -> dict:
     return {"topics": []}
 
 
+def configure_runtime_from_secrets(config: dict):
+    """Configure runtime for Streamlit Cloud subprocess jobs."""
+    base_dir = Path(__file__).parent
+
+    # Allow synthesis subprocesses to authenticate without local env setup.
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        api_key = st.secrets.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            anthropic_section = st.secrets.get("anthropic", {})
+            if isinstance(anthropic_section, dict):
+                api_key = anthropic_section.get("api_key")
+        if api_key:
+            os.environ["ANTHROPIC_API_KEY"] = str(api_key)
+
+    # Scrape/synthesize scripts read config.yaml directly.
+    # On Streamlit Cloud, write a runtime file if one is not present.
+    config_path = base_dir / "config.yaml"
+    if not config_path.exists() and config:
+        try:
+            with open(config_path, "w", encoding="utf-8") as f:
+                yaml.safe_dump(config, f, sort_keys=False)
+        except OSError as exc:
+            st.warning(f"Could not write runtime config.yaml: {exc}")
+
+
 def write_progress(job_type: str, status: str, step: str, percentage: float = 0, error: str = None):
     """Write progress to database for cross-thread communication (thread-safe)."""
     _init_progress_db()
@@ -1324,6 +1349,7 @@ def main():
 
     # Load config
     config = load_config()
+    configure_runtime_from_secrets(config)
     topic_names = get_topic_names(config)
 
     # Header
