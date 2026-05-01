@@ -15,6 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import quote_plus, urlencode
+from urllib.request import Request, urlopen
 
 import yaml
 from playwright.async_api import async_playwright, Page, Browser, Error as PlaywrightError, TimeoutError as PlaywrightTimeout
@@ -212,6 +213,57 @@ async def scrape_reddit(page: Page, keyword: str, max_posts: int, config: dict) 
 
     except Exception as e:
         print(f"    Error scraping Reddit for '{keyword}': {e}")
+
+    return posts
+
+
+def scrape_reddit_http(keyword: str, max_posts: int, config: dict) -> list:
+    """Scrape Reddit search results via JSON API without Playwright.
+
+    This is a cloud-safe fallback used when browser launch fails.
+    """
+    posts = []
+    encoded_keyword = quote_plus(keyword)
+    search_url = f"https://www.reddit.com/search.json?q={encoded_keyword}&sort=relevance&t=all&limit={max_posts}"
+
+    headers = {"User-Agent": get_random_user_agent(config)}
+    timeout = config.get("scraping", {}).get("timeout", 30)
+
+    try:
+        req = Request(search_url, headers=headers)
+        with urlopen(req, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8", errors="replace"))
+
+        children = payload.get("data", {}).get("children", [])
+        for child in children:
+            data = child.get("data", {})
+            title = (data.get("title") or "").strip()
+            body = (data.get("selftext") or "").strip()
+            permalink = data.get("permalink") or ""
+            subreddit = data.get("subreddit") or ""
+            author = data.get("author") or ""
+
+            if not title and not body:
+                continue
+
+            content = (f"{title}\n{body}").strip()[:2000]
+            if len(content) < 20:
+                continue
+
+            url = f"https://www.reddit.com{permalink}" if permalink else ""
+
+            posts.append({
+                "title": title,
+                "content": content,
+                "url": url,
+                "author": author,
+                "source": f"reddit/{subreddit}" if subreddit else "reddit",
+            })
+
+            if len(posts) >= max_posts:
+                break
+    except Exception as e:
+        print(f"    Error scraping Reddit HTTP fallback for '{keyword}': {e}")
 
     return posts
 
@@ -1608,36 +1660,77 @@ async def run_scraper_async(topic_name: str = None, platforms: list = None) -> d
         "platforms_used": platforms
     }
 
-    async with async_playwright() as p:
-        browser = await launch_chromium_with_fallback(p)
+    async def run_reddit_fallback_only() -> dict:
+        """Fallback mode for environments where Playwright can't launch."""
+        print("\nRunning Reddit HTTP fallback mode (Playwright unavailable).")
+        for topic in topics_to_scrape:
+            print(f"\nScraping topic: {topic['name']}")
+            topic_id = database.get_or_create_topic(topic["name"])
+            max_posts = topic.get("max_posts_per_keyword", 50)
+            topic_keywords = topic["keywords"]
 
-        try:
-            for topic in topics_to_scrape:
-                print(f"\nScraping topic: {topic['name']}")
-                print(f"Platforms: {', '.join(platforms)} (concurrent)")
-                topic_id = database.get_or_create_topic(topic["name"])
-                max_posts = topic.get("max_posts_per_keyword", 50)
-                topic_keywords = topic["keywords"]
+            for keyword in topic_keywords:
+                print(f"  Keyword: '{keyword}'")
+                keyword_id = database.add_keyword(topic_id, keyword, is_seed=True)
+                posts = scrape_reddit_http(keyword, max_posts, config)
 
-                for keyword in topic_keywords:
-                    print(f"  Keyword: '{keyword}'")
-                    keyword_id = database.add_keyword(topic_id, keyword, is_seed=True)
+                saved, filtered = 0, 0
+                for post in posts:
+                    result_type = save_if_complaint(post, keyword, topic_keywords)
+                    if result_type == "saved":
+                        stats["posts_saved"] += 1
+                        saved += 1
+                    elif result_type == "duplicate":
+                        stats["duplicates_skipped"] += 1
+                    else:
+                        filtered += 1
+                    stats["posts_found"] += 1
 
-                    # Scrape all platforms concurrently for this keyword
-                    keyword_stats = await scrape_keyword_async(
-                        browser, keyword, topic_id, keyword_id,
-                        topic_keywords, max_posts, platforms, config
-                    )
+                stats["keywords_processed"] += 1
+                print(f"    Reddit HTTP: found {len(posts)}, saved {saved}, filtered {filtered}")
 
-                    stats["posts_found"] += keyword_stats["posts_found"]
-                    stats["posts_saved"] += keyword_stats["posts_saved"]
-                    stats["duplicates_skipped"] += keyword_stats["duplicates_skipped"]
-                    stats["keywords_processed"] += 1
+            stats["topics_scraped"] += 1
 
-                stats["topics_scraped"] += 1
-        finally:
-            # Ensure browser is always closed to prevent zombie processes
-            await browser.close()
+        return stats
+
+    try:
+        async with async_playwright() as p:
+            browser = await launch_chromium_with_fallback(p)
+
+            try:
+                for topic in topics_to_scrape:
+                    print(f"\nScraping topic: {topic['name']}")
+                    print(f"Platforms: {', '.join(platforms)} (concurrent)")
+                    topic_id = database.get_or_create_topic(topic["name"])
+                    max_posts = topic.get("max_posts_per_keyword", 50)
+                    topic_keywords = topic["keywords"]
+
+                    for keyword in topic_keywords:
+                        print(f"  Keyword: '{keyword}'")
+                        keyword_id = database.add_keyword(topic_id, keyword, is_seed=True)
+
+                        # Scrape all platforms concurrently for this keyword
+                        keyword_stats = await scrape_keyword_async(
+                            browser, keyword, topic_id, keyword_id,
+                            topic_keywords, max_posts, platforms, config
+                        )
+
+                        stats["posts_found"] += keyword_stats["posts_found"]
+                        stats["posts_saved"] += keyword_stats["posts_saved"]
+                        stats["duplicates_skipped"] += keyword_stats["duplicates_skipped"]
+                        stats["keywords_processed"] += 1
+
+                    stats["topics_scraped"] += 1
+            finally:
+                # Ensure browser is always closed to prevent zombie processes
+                await browser.close()
+    except Exception as exc:
+        # Streamlit Cloud often lacks compatible system libs for Playwright browsers.
+        if platforms == ["reddit"]:
+            print(f"Playwright unavailable ({exc}). Falling back to Reddit HTTP scraping.")
+            await run_reddit_fallback_only()
+        else:
+            raise
 
     print(f"\nScraping complete!")
     print(f"  Topics scraped: {stats['topics_scraped']}")
