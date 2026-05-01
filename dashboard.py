@@ -28,6 +28,7 @@ from pathlib import Path
 import plotly.express as px
 import streamlit as st
 import yaml
+from streamlit.errors import StreamlitSecretNotFoundError
 
 import database
 import synthesize
@@ -127,11 +128,18 @@ def configure_runtime_from_secrets(config: dict):
 
     base_dir = Path(__file__).parent
 
+    def _safe_secret_get(key: str, default=None):
+        """Read Streamlit secret key without failing when secrets file is absent."""
+        try:
+            return st.secrets.get(key, default)
+        except StreamlitSecretNotFoundError:
+            return default
+
     # Allow synthesis subprocesses to authenticate without local env setup.
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        api_key = st.secrets.get("ANTHROPIC_API_KEY")
+        api_key = _safe_secret_get("ANTHROPIC_API_KEY")
         if not api_key:
-            anthropic_section = st.secrets.get("anthropic", {})
+            anthropic_section = _safe_secret_get("anthropic", {})
             if hasattr(anthropic_section, "get"):
                 api_key = anthropic_section.get("api_key")
         if api_key:
