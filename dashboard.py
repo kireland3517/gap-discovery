@@ -248,6 +248,15 @@ def run_scraper_background(
             error_text = stderr_tail.strip() or stdout_tail.strip() or "Unknown scraper error"
             if stdout_tail.strip() and stderr_tail.strip():
                 error_text = f"{stderr_tail}\n\n[stdout tail]\n{stdout_tail}"
+            if "libglib-2.0.so.0" in error_text:
+                error_text = (
+                    "Playwright Chromium could not start because a required system library "
+                    "is missing on the host (libglib-2.0.so.0). "
+                    "If running on Streamlit Cloud, add apt package 'libglib2.0-0' in packages.txt "
+                    "and redeploy. You can still run standard Reddit scraping with '--platforms reddit' "
+                    "locally while cloud image is being rebuilt.\n\n"
+                    f"{error_text}"
+                )
             write_progress("scrape", "failed", "Scrape failed", 0, error=error_text)
 
     except Exception as e:
