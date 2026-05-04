@@ -30,7 +30,7 @@ RETRYABLE_EXCEPTIONS = (
     ConnectionError,      # Network connection issues
     OSError,              # Low-level network errors (includes socket errors)
 )
-from complaint_detector import is_complaint
+from complaint_detector import should_save_scraped_post
 
 # Retry configuration
 MAX_RETRIES = 3
@@ -1550,6 +1550,10 @@ async def run_pain_scrapers_async(scrapers: list = None, topic_name: str = None)
     print(f"  Community posts: {stats['community_posts']}")
     print(f"  Job signals: {stats['job_signals']}")
     print(f"  Errors: {stats['errors']}")
+    print(
+        "\nNote: Autocomplete/PAA rows are stored in the `search_signals` table (not `posts`). "
+        "G2/Capterra only run when `pain_intelligence.tool_reviews.tools` lists products with g2_slug/capterra_id."
+    )
 
     return stats
 
@@ -1584,10 +1588,22 @@ async def scrape_keyword_async(
         "unfiltered_saved": 0
     }
 
+    scraping_cfg = config.get("scraping", {})
+
     def save_if_complaint(post, keyword, topic_keywords):
-        """Save post only if content is a complaint (not casual mention)."""
+        """Save post if complaint-like or keyword-grounded (off-site discovery gate)."""
         content = f"{post['title']} {post['content']}"
-        is_comp, complaint_score = is_complaint(content, keyword, topic_keywords)
+        is_comp, complaint_score = should_save_scraped_post(
+            content,
+            keyword,
+            topic_keywords,
+            post.get("source", ""),
+            use_offsite_discovery_gate=scraping_cfg.get("offsite_discovery_gate", True),
+            discovery_topic_threshold=float(
+                scraping_cfg.get("offsite_discovery_topic_threshold", 0.28)
+            ),
+            discovery_min_chars=int(scraping_cfg.get("offsite_discovery_min_chars", 20)),
+        )
         if not is_comp:
             if not save_unfiltered:
                 return "skipped"
@@ -1717,9 +1733,21 @@ async def run_scraper_async(
         "platforms_used": platforms
     }
 
+    scraping_cfg_fb = config.get("scraping", {})
+
     def save_if_complaint_for_topic(post: dict, keyword: str, topic_keywords: list, topic_id: int, keyword_id: int) -> str:
         content = f"{post['title']} {post['content']}"
-        is_comp, complaint_score = is_complaint(content, keyword, topic_keywords)
+        is_comp, complaint_score = should_save_scraped_post(
+            content,
+            keyword,
+            topic_keywords,
+            post.get("source", ""),
+            use_offsite_discovery_gate=scraping_cfg_fb.get("offsite_discovery_gate", True),
+            discovery_topic_threshold=float(
+                scraping_cfg_fb.get("offsite_discovery_topic_threshold", 0.28)
+            ),
+            discovery_min_chars=int(scraping_cfg_fb.get("offsite_discovery_min_chars", 20)),
+        )
         if not is_comp:
             if not save_unfiltered:
                 return "skipped"

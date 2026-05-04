@@ -58,6 +58,11 @@ PROBLEM_PATTERNS = [
 ]
 
 # Stopwords for topic term extraction
+# YouTube / Algolia HN / Quora hits are often questions or discussion without
+# "frustrated" wording; they still match seed keywords. Scrape layer can use
+# should_save_scraped_post() to retain keyword-grounded discovery posts.
+OFFSITE_DISCOVERY_SOURCES = frozenset({"youtube", "hackernews", "quora"})
+
 STOPWORDS = {
     'a', 'an', 'the', 'is', 'it', 'to', 'for', 'my', 'i', 'me',
     'vs', 'or', 'and', 'of', 'in', 'on', 'at', 'by', 'with', 'from',
@@ -207,6 +212,38 @@ def is_complaint(content: str, keyword: str, topic_keywords: list) -> tuple:
     is_complaint_result = weighted_score >= 0.5
 
     return (is_complaint_result, round(weighted_score, 3))
+
+
+def should_save_scraped_post(
+    content: str,
+    keyword: str,
+    topic_keywords: list,
+    source: str,
+    *,
+    use_offsite_discovery_gate: bool = True,
+    discovery_topic_threshold: float = 0.28,
+    discovery_min_chars: int = 20,
+) -> tuple:
+    """
+    Whether to persist a scraped post. Uses complaint heuristics first; for
+    YouTube / Hacker News / Quora optionally keeps keyword-relevant text even
+    when it does not read like an explicit complaint (common for Q&A and titles).
+    """
+    is_comp, score = is_complaint(content, keyword, topic_keywords)
+    if is_comp:
+        return (True, score)
+    if not use_offsite_discovery_gate:
+        return (False, score)
+    src = (source or "").strip().lower()
+    if src not in OFFSITE_DISCOVERY_SOURCES:
+        return (False, score)
+    text = content.strip()
+    if len(text) < discovery_min_chars:
+        return (False, score)
+    ts = calculate_topic_score(content, keyword, topic_keywords)
+    if ts >= discovery_topic_threshold:
+        return (True, max(score, 0.42))
+    return (False, score)
 
 
 # Convenience function for testing

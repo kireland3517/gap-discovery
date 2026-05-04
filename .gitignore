@@ -3,6 +3,7 @@
 
 # Database
 research.db
+.job_progress.db
 
 # Python
 __pycache__/

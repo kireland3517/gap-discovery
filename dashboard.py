@@ -237,7 +237,9 @@ def run_scraper_background(
             capture_output=True,
             text=True,
             cwd=str(Path(__file__).parent),
-            check=False
+            check=False,
+            encoding="utf-8",
+            errors="replace",
         )
 
         if result.returncode == 0:
@@ -245,9 +247,11 @@ def run_scraper_background(
         else:
             stderr_tail = (result.stderr or "")[-2500:]
             stdout_tail = (result.stdout or "")[-1500:]
-            error_text = stderr_tail.strip() or stdout_tail.strip() or "Unknown scraper error"
             if stdout_tail.strip() and stderr_tail.strip():
-                error_text = f"{stderr_tail}\n\n[stdout tail]\n{stdout_tail}"
+                body = f"{stderr_tail}\n\n[stdout tail]\n{stdout_tail}"
+            else:
+                body = stderr_tail.strip() or stdout_tail.strip() or "Unknown scraper error"
+            error_text = f"(exit code {result.returncode})\n{body}"
             if "libglib-2.0.so.0" in error_text:
                 error_text = (
                     "Playwright Chromium could not start because a required system library "
@@ -269,30 +273,35 @@ def run_synthesis_background(topic_name: str, mode: str = "pain"):
         write_progress("synthesize", "running", f"Analyzing posts for {topic_name}", 10)
 
         if mode == "pain":
-            # Run pain intelligence synthesis
+            # Run pain intelligence synthesis (reads rows in `posts` only)
             stats = synthesize.run_pain_intelligence_synthesis(topic_name, process_all=True)
-
-            # Reset processed flag
-            topic_id = database.get_or_create_topic(topic_name)
-            database.reset_processed_posts(topic_id)
 
             evidence_saved = stats.get("evidence_saved", 0)
             clusters_created = stats.get("clusters_created", 0)
-            write_progress(
-                "synthesize", "completed",
-                f"Saved {evidence_saved} evidence, {clusters_created} clusters!",
-                100
-            )
+            posts_processed = stats.get("posts_processed", 0)
+            if posts_processed == 0:
+                msg = (
+                    "Synthesis finished: no unprocessed posts for this topic. "
+                    "Run a standard scrape (Reddit/YouTube/HN/Quora) first. "
+                    "Pain-mode autocomplete/PAA is stored in search_signals and is not fed into synthesis yet."
+                )
+            else:
+                msg = f"Saved {evidence_saved} evidence, {clusters_created} clusters (from {posts_processed} posts)."
+            write_progress("synthesize", "completed", msg, 100)
         else:
             # Legacy synthesis
             stats = synthesize.run_synthesis(topic_name, process_all=True)
 
-            # Reset processed flag
-            topic_id = database.get_or_create_topic(topic_name)
-            database.reset_processed_posts(topic_id)
-
             themes_created = stats.get("themes_created", 0)
-            write_progress("synthesize", "completed", f"Created {themes_created} themes!", 100)
+            posts_processed = stats.get("posts_processed", 0)
+            if posts_processed == 0:
+                msg = (
+                    "Synthesis finished: no unprocessed posts. "
+                    "Run a standard scrape first, then synthesize again."
+                )
+            else:
+                msg = f"Created {themes_created} themes (from {posts_processed} posts)."
+            write_progress("synthesize", "completed", msg, 100)
 
     except Exception as e:
         write_progress("synthesize", "failed", "Synthesis error", 0, error=str(e))
@@ -324,6 +333,12 @@ def render_progress_indicator():
 
         st.info(f"**{job_type} in progress:** {step}")
         st.progress(progress.get("percentage", 0) / 100)
+        if progress.get("job_type") == "scrape":
+            st.caption(
+                "The scraper runs in a separate process. This page auto-refreshes every ~2s. "
+                "Large topics can take 20–60+ minutes with no percentage updates; "
+                "for live logs, run `python scrape.py ...` in a terminal."
+            )
         return True
 
     elif status == "completed":
@@ -1429,7 +1444,11 @@ def main():
             "Scrape Mode",
             ["standard", "pain"],
             index=0,
-            help="Standard scrapes Reddit/YouTube/Hacker News/Quora. Pain mode scrapes search, reviews, communities, and jobs."
+            help=(
+                "Standard: saves to Posts (Reddit, YouTube, HN, Quora) — required before Synthesize. "
+                "Pain: autocomplete/PAA/reviews/jobs mostly go to other tables (e.g. search_signals); "
+                "Synthesize still only reads Posts today."
+            ),
         )
 
         platforms_to_scrape = []
@@ -1499,14 +1518,21 @@ def main():
                 st.rerun()
 
     with col4:
+        synthesis_internal_mode = st.selectbox(
+            "Synthesis",
+            ["pain", "legacy"],
+            format_func=lambda m: (
+                "Pain evidence (posts in DB)" if m == "pain" else "Legacy themes (posts in DB)"
+            ),
+            key="synthesis_internal_mode",
+            help="Both modes only read the `posts` table. Run a standard scrape first.",
+        )
         synth_disabled = job_running
         if selected_topic and st.button("Synthesize", disabled=synth_disabled):
-            synthesis_mode = "pain" if scrape_mode == "pain" else "legacy"
-            # Start background synthesis job with pain intelligence mode
             start_background_job(
                 "synthesize",
                 run_synthesis_background,
-                (selected_topic, synthesis_mode)
+                (selected_topic, synthesis_internal_mode),
             )
             st.rerun()
 
@@ -1528,6 +1554,14 @@ def main():
     stat_col3.metric("Confirmed", pain_stats["evidence"]["confirmed_evidence"] or 0)
     stat_col4.metric("Clusters", pain_stats["clusters"]["valid_clusters"] or 0)
     stat_col5.metric("Failed Tools", pain_stats["failed_solutions"]["unique_failed_tools"] or 0)
+
+    sd = pain_stats.get("scraped_data") or {}
+    st.caption(
+        "Pain mode scrape buffer (separate from Posts): "
+        f"{sd.get('search_signals', 0)} search signals (autocomplete/PAA), "
+        f"{sd.get('tool_reviews', 0)} tool reviews (needs `pain_intelligence.tool_reviews.tools` in config), "
+        f"{sd.get('job_signals', 0)} job signals."
+    )
 
     st.divider()
 
