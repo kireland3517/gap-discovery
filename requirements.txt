@@ -12,3 +12,6 @@ plotly>=5.18.0
 
 # Configuration
 pyyaml>=6.0
+
+# HTTP client for Oxylabs API
+aiohttp>=3.9.0

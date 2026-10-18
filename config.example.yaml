@@ -100,3 +100,15 @@ pain_intelligence:
       - "spreadsheet"
       - "copy and paste"
       - "data entry"
+
+# Oxylabs API scrapers (credentials via env vars OXYLABS_USER / OXYLABS_PASS)
+# pain_intelligence:
+#   oxylabs:
+#     amazon_asins:
+#       - "B07FZ8S74R"
+#     amazon_geo: "90210"
+#     google_queries:
+#       - "adidas"
+#     google_geo: "California,United States"
+#     universal_urls:
+#       - "https://sandbox.oxylabs.io/"

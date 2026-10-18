@@ -9,6 +9,7 @@ Uses async headless browser with retry logic for reliability.
 import argparse
 import asyncio
 import json
+import os
 import random
 import re
 import subprocess
@@ -49,8 +50,16 @@ PAIN_SCRAPERS = [
     "make_community",
     "hubspot_community",
     "linkedin_jobs",
-    "indeed_jobs"
+    "indeed_jobs",
+    "oxylabs_amazon",
+    "oxylabs_google",
+    "oxylabs_universal",
 ]
+
+# Oxylabs API credentials (set via environment variables)
+OXYLABS_USER = os.environ.get("OXYLABS_USER", "studioscript_lbtaJ")
+OXYLABS_PASS = os.environ.get("OXYLABS_PASS", "UOL8hK9~t~cs")
+OXYLABS_URL = "https://realtime.oxylabs.io/v1/queries"
 
 
 async def launch_chromium_with_fallback(playwright_instance):
@@ -1264,6 +1273,151 @@ async def scrape_indeed_jobs(page: Page, config: dict) -> list:
 
 
 # =============================================================================
+# OXYLABS API SCRAPERS
+# =============================================================================
+
+async def scrape_oxylabs_amazon(asin: str, geo_location: str = "90210") -> dict:
+    """
+    Fetch Amazon product data via Oxylabs realtime API.
+
+    Args:
+        asin: Amazon product ASIN (e.g. "B07FZ8S74R")
+        geo_location: ZIP code for geo-targeting (default "90210")
+
+    Returns:
+        Parsed product dict, or empty dict on failure.
+    """
+    import aiohttp
+
+    payload = {
+        "source": "amazon_product",
+        "query": asin,
+        "geo_location": geo_location,
+        "parse": True,
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                OXYLABS_URL,
+                auth=aiohttp.BasicAuth(OXYLABS_USER, OXYLABS_PASS),
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+                results = data.get("results", [])
+                if results:
+                    content = results[0].get("content", {})
+                    return {
+                        "source": "amazon",
+                        "asin": asin,
+                        "title": content.get("title", ""),
+                        "price": content.get("price", ""),
+                        "rating": content.get("rating", ""),
+                        "reviews_count": content.get("reviews_count", ""),
+                        "description": content.get("description", ""),
+                        "url": f"https://www.amazon.com/dp/{asin}",
+                        "raw": content,
+                    }
+    except Exception as e:
+        print(f"    Oxylabs Amazon error for ASIN '{asin}': {e}")
+
+    return {}
+
+
+async def scrape_oxylabs_google(query: str, geo_location: str = "California,United States") -> list:
+    """
+    Fetch Google search results via Oxylabs realtime API.
+
+    Args:
+        query: Search query string
+        geo_location: Location string for geo-targeting
+
+    Returns:
+        List of result dicts with title, url, description.
+    """
+    import aiohttp
+
+    payload = {
+        "source": "google_search",
+        "query": query,
+        "geo_location": geo_location,
+        "parse": True,
+    }
+
+    results_list = []
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                OXYLABS_URL,
+                auth=aiohttp.BasicAuth(OXYLABS_USER, OXYLABS_PASS),
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+                results = data.get("results", [])
+                if results:
+                    content = results[0].get("content", {})
+                    organic = content.get("results", {}).get("organic", [])
+                    for item in organic:
+                        results_list.append({
+                            "source": "google_oxylabs",
+                            "query": query,
+                            "title": item.get("title", ""),
+                            "url": item.get("url", ""),
+                            "description": item.get("desc", ""),
+                            "position": item.get("pos", ""),
+                        })
+    except Exception as e:
+        print(f"    Oxylabs Google error for query '{query}': {e}")
+
+    return results_list
+
+
+async def scrape_oxylabs_universal(url: str) -> dict:
+    """
+    Fetch any URL via Oxylabs universal scraper.
+
+    Args:
+        url: The URL to scrape
+
+    Returns:
+        Dict with content field containing raw HTML/text, or empty dict on failure.
+    """
+    import aiohttp
+
+    payload = {
+        "source": "universal",
+        "url": url,
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                OXYLABS_URL,
+                auth=aiohttp.BasicAuth(OXYLABS_USER, OXYLABS_PASS),
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+                results = data.get("results", [])
+                if results:
+                    return {
+                        "source": "oxylabs_universal",
+                        "url": url,
+                        "content": results[0].get("content", ""),
+                    }
+    except Exception as e:
+        print(f"    Oxylabs Universal error for URL '{url}': {e}")
+
+    return {}
+
+
+# =============================================================================
 # PAIN INTELLIGENCE SCRAPER ORCHESTRATION
 # =============================================================================
 
@@ -1533,6 +1687,82 @@ async def run_pain_scrapers_async(scrapers: list = None, topic_name: str = None)
                 except Exception as e:
                     print(f"  Error: {e}")
                     stats["errors"] += 1
+
+            # --- Oxylabs: Amazon Products ---
+            if "oxylabs_amazon" in scrapers:
+                print("\n[Oxylabs Amazon]")
+                oxylabs_cfg = pain_config.get("oxylabs", {})
+                asins = oxylabs_cfg.get("amazon_asins", [])
+                geo = oxylabs_cfg.get("amazon_geo", "90210")
+                for asin in asins:
+                    print(f"  ASIN: {asin}")
+                    try:
+                        product = await scrape_oxylabs_amazon(asin, geo)
+                        if product:
+                            database.add_post(
+                                topic_id=1,
+                                keyword_id=None,
+                                source="amazon",
+                                url=product["url"],
+                                title=product["title"],
+                                content=json.dumps(product["raw"]),
+                                author=""
+                            )
+                            stats["community_posts"] += 1
+                        print(f"    Saved product data for ASIN {asin}")
+                    except Exception as e:
+                        print(f"    Error: {e}")
+                        stats["errors"] += 1
+
+            # --- Oxylabs: Google Search ---
+            if "oxylabs_google" in scrapers:
+                print("\n[Oxylabs Google Search]")
+                oxylabs_cfg = pain_config.get("oxylabs", {})
+                queries = oxylabs_cfg.get("google_queries", [])
+                geo = oxylabs_cfg.get("google_geo", "California,United States")
+                for query in queries:
+                    print(f"  Query: {query}")
+                    try:
+                        results = await scrape_oxylabs_google(query, geo)
+                        for r in results:
+                            database.add_search_signal(
+                                signal_type="google_oxylabs",
+                                query=r["query"],
+                                result_text=f"{r['title']} - {r['description']}",
+                                position=r.get("position"),
+                                tool=None,
+                                source_url=r["url"]
+                            )
+                            stats["autocomplete_suggestions"] += 1
+                        print(f"    Saved {len(results)} results")
+                    except Exception as e:
+                        print(f"    Error: {e}")
+                        stats["errors"] += 1
+
+            # --- Oxylabs: Universal URL Scraper ---
+            if "oxylabs_universal" in scrapers:
+                print("\n[Oxylabs Universal]")
+                oxylabs_cfg = pain_config.get("oxylabs", {})
+                urls = oxylabs_cfg.get("universal_urls", [])
+                for url in urls:
+                    print(f"  URL: {url}")
+                    try:
+                        result = await scrape_oxylabs_universal(url)
+                        if result:
+                            database.add_post(
+                                topic_id=1,
+                                keyword_id=None,
+                                source="oxylabs_universal",
+                                url=result["url"],
+                                title=result["url"],
+                                content=result["content"][:3000],
+                                author=""
+                            )
+                            stats["community_posts"] += 1
+                        print(f"    Saved content from {url}")
+                    except Exception as e:
+                        print(f"    Error: {e}")
+                        stats["errors"] += 1
 
         finally:
             # Ensure browser resources are always cleaned up
