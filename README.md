@@ -10,6 +10,10 @@ Automatically collects real-world complaints from Reddit and YouTube, then synth
 
 No idea generation. Just surfaces what real people are struggling with.
 
+**Who it's for:** founders and researchers validating a problem space before building anything.
+
+**Stack:** Python, Playwright, SQLite, Anthropic Claude API, Streamlit + Plotly.
+
 ## What You Need
 
 **Accounts:**
