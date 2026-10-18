@@ -1,6 +1,6 @@
 # Research Pattern Discovery System
 
-Automatically collects real-world complaints from Reddit and YouTube, then synthesizes them into clear problem patterns using AI.
+Automatically collects real-world complaints from Reddit, YouTube, Hacker News, Quora and (in pain mode) review sites, communities, search suggestions and job postings, then synthesizes them into clear problem patterns using AI.
 
 ## What This Does
 
@@ -56,6 +56,17 @@ python scrape.py
 ```
 
 Runs for 10-30 minutes. Saves posts to database.
+
+Standard mode covers Reddit, YouTube, Hacker News and Quora. Pick platforms with `--platforms`:
+```bash
+python scrape.py --topic "Your Topic" --platforms reddit,hackernews
+```
+
+Pain mode adds Google autocomplete and "People also ask", G2 and Capterra reviews, Zapier/Make/HubSpot community forums, and LinkedIn/Indeed job postings:
+```bash
+python scrape.py --mode pain --topic "Your Topic" --pain-scrapers google_autocomplete,g2_reviews
+```
+Configure pain-mode sources under `pain_intelligence` in `config.yaml`. Optional Oxylabs scrapers are in `config.example.yaml` (credentials via `OXYLABS_USER` / `OXYLABS_PASS`).
 
 **Synthesize themes:**
 ```bash
